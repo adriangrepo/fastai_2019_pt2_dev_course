@@ -92,6 +92,7 @@ class Hooks(ListContainer):
         for h in self: h.remove()
 
 def get_cnn_layers(data, nfs, layer, **kwargs):
+    #number of filters
     nfs = [1] + nfs
     return [layer(nfs[i], nfs[i+1], 5 if i==0 else 3, **kwargs)
             for i in range(len(nfs)-1)] + [

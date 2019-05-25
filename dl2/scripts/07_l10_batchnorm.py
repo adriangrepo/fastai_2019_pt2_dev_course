@@ -69,12 +69,18 @@ learn,run = get_learn_run(nfs, data, 0.4, conv_layer, cbs=cbfs)
 # ### Custom
 
 # Let's start by building our own `BatchNorm` layer from scratch.
+# 
+# NB
+# 
+# If keepdim is True, the output tensor is of the same size as input except in the dimension dim where it is of size 1. Otherwise, dim is squeezed (see torch.squeeze()), resulting in the output tensor having 1 fewer dimension than input.
 
 
 
 class BatchNorm(nn.Module):
+    
     def __init__(self, nf, mom=0.1, eps=1e-5):
         super().__init__()
+        self.start = True
         # NB: pytorch bn mom is opposite of what you'd expect
         self.mom,self.eps = mom,eps
         self.mults = nn.Parameter(torch.ones (nf,1,1))
@@ -83,17 +89,25 @@ class BatchNorm(nn.Module):
         self.register_buffer('means', torch.zeros(1,nf,1,1))
 
     def update_stats(self, x):
+        #why (0,2,3)?
         m = x.mean((0,2,3), keepdim=True)
         v = x.var ((0,2,3), keepdim=True)
+        #keep an ewma of means and variances
         self.means.lerp_(m, self.mom)
         self.vars.lerp_ (v, self.mom)
         return m,v
         
     def forward(self, x):
+        if self.start:
+            print(f'>>forward x.shape: {x.shape}')
+            self.start=False
         if self.training:
             with torch.no_grad(): m,v = self.update_stats(x)
-        else: m,v = self.means,self.vars
+        else: 
+            #use running average means and variances
+            m,v = self.means,self.vars
         x = (x-m) / (v+self.eps).sqrt()
+        #gamma = mults, beta = adds
         return x*self.mults + self.adds
 
 
