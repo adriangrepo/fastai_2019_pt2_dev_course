@@ -85,14 +85,19 @@ class BatchNorm(nn.Module):
         self.mom,self.eps = mom,eps
         self.mults = nn.Parameter(torch.ones (nf,1,1))
         self.adds  = nn.Parameter(torch.zeros(nf,1,1))
+        #this creates a self.vars, but if registered moves to GPU when move model to GPU
+        #plus we need at interence - are saved
         self.register_buffer('vars',  torch.ones(1,nf,1,1))
         self.register_buffer('means', torch.zeros(1,nf,1,1))
 
     def update_stats(self, x):
-        #why (0,2,3)?
+        #why (0,2,3)? - as we average over all batches and x and y coords 
+        #- leaving out number of filters - ie mean for each channel/filter
+        #keepdim=True - leave an empty unit axis in positions 0,2,3 so still broadcasts
         m = x.mean((0,2,3), keepdim=True)
         v = x.var ((0,2,3), keepdim=True)
         #keep an ewma of means and variances
+        #lerp = linear interpolation, we really mean 1-mom
         self.means.lerp_(m, self.mom)
         self.vars.lerp_ (v, self.mom)
         return m,v
@@ -114,7 +119,7 @@ class BatchNorm(nn.Module):
 
 
 def conv_layer(ni, nf, ks=3, stride=2, bn=True, **kwargs):
-    # No bias needed if using bn
+    # No bias needed if using bn - beta (adds) acts as a bias
     layers = [nn.Conv2d(ni, nf, ks, padding=ks//2, stride=stride, bias=not bn),
               GeneralRelu(**kwargs)]
     if bn: 
@@ -205,6 +210,8 @@ learn,run = get_learn_run(nfs, data, 1., conv_layer, cbs=cbfs)
 # ### With scheduler
 
 # Now let's add the usual warm-up/annealing.
+# 
+# go up to lr=2!
 
 
 
@@ -247,6 +254,10 @@ class LayerNorm(nn.Module):
         self.add  = nn.Parameter(tensor(0.))
 
     def forward(self, x):
+        #intead of mean over all batches for a filter (0,2,3)
+        #we we do (1,2,3) -average over channel, x,y for each image individually
+        #and dont need running averages over a batch
+        #as every image has itas won mean and std dev
         m = x.mean((1,2,3), keepdim=True)
         v = x.var ((1,2,3), keepdim=True)
         x = (x-m) / ((v+self.eps).sqrt())
@@ -308,6 +319,7 @@ class InstanceNorm(nn.Module):
         self.adds  = nn.Parameter(torch.zeros(nf,1,1))
 
     def forward(self, x):
+
         m = x.mean((2,3), keepdim=True)
         v = x.var ((2,3), keepdim=True)
         res = (x-m) / ((v+self.eps).sqrt())
@@ -334,6 +346,13 @@ learn,run = get_learn_run(nfs, data, 0.1, conv_in, cbs=cbfs)
 
 
 # *Question*: why can't this classify anything?
+
+# <pre>
+# BN: averge over batch, h, w and different for each channel
+# LN: averge over channel, h, w and different for each batch
+# IN: averge over h, w and different for each batch and each channel
+# GN: as IN but arbitrarily group a few channels together - more general
+# </pre>
 
 # Lost in all those norms? The authors from the [group norm paper](https://arxiv.org/pdf/1803.08494.pdf) have you covered:
 # 
@@ -411,6 +430,8 @@ learn,run = get_learn_run(nfs, data, 0.4, conv_layer, cbs=cbfs)
 # ### Running Batch Norm
 
 # To solve this problem we introduce a Running BatchNorm that uses smoother running mean and variance for the mean and std.
+# 
+# 1st true soln to small bs problem
 
 
 
@@ -434,6 +455,7 @@ class RunningBatchNorm(nn.Module):
         dims = (0,2,3)
         s = x.sum(dims, keepdim=True)
         ss = (x*x).sum(dims, keepdim=True)
+        #(total num elements in minibatch) /(number pof channels)
         c = self.count.new_tensor(x.numel()/nc)
         mom1 = 1 - (1-self.mom)/math.sqrt(bs-1)
         self.mom1 = self.dbias.new_tensor(mom1)
@@ -445,6 +467,7 @@ class RunningBatchNorm(nn.Module):
         self.step += 1
 
     def forward(self, x):
+        #don div by batch std dev - use tt as well
         if self.training: self.update_stats(x)
         sums = self.sums
         sqrs = self.sqrs
@@ -454,6 +477,8 @@ class RunningBatchNorm(nn.Module):
             sqrs = sqrs / self.dbias
             c    = c    / self.dbias
         means = sums/c
+        #sqaures/counts minus means squared
+        #see 5a_foundations (lesson 10)
         vars = (sqrs/c).sub_(means*means)
         if bool(self.batch < 20): vars.clamp_min_(0.01)
         x = (x-means).div_((vars.add_(self.eps)).sqrt())
