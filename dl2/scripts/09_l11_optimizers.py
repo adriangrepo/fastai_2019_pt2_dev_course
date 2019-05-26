@@ -16,6 +16,17 @@ from utils.nb_classes_l8_to_10 import *
 from utils.nb_classes_l10_revised import *
 from utils.nb_classes_cnn import *
 from utils.nb_datablock import *
+import utils.nb_classes_cnn as nb_classes_cnn
+import utils.nb_datablock as nb_datablock
+
+
+
+
+#set to false for setting breakpoints in debugger
+run_on_gpu=True
+
+nb_classes_cnn.RUN_CNN_ON_GPU=False
+nb_datablock.RUN_DATA_ON_GPU=False
 
 
 # ## Imagenette data
@@ -58,7 +69,7 @@ cbfs = [partial(AvgStatsCallback,accuracy), CudaCallback,
 learn,run = get_learn_run(nfs, data, 0.4, conv_layer, cbs=cbfs)
 
 
-
+print('fit')
 
 run.fit(1, learn)
 
