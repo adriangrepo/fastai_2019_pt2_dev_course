@@ -15,6 +15,12 @@ from utils.nb_classes_l10_revised import *
 from utils.nb_classes_cnn import *
 
 
+
+
+#set to false for setting breakpoints in debugger
+run_on_gpu=True
+
+
 # ## Layerwise Sequential Unit Variance (LSUV)
 
 # Getting the MNIST data and a CNN
@@ -44,8 +50,12 @@ cbfs = [Recorder,
 
 
 
+#create these layers with this number of filters
 nfs = [8,16,32,64,64]
 
+
+# See All you need is a good init paper
+# Here we put a bias and weight method in the conv layer
 
 
 
@@ -55,14 +65,18 @@ class ConvLayer(nn.Module):
         self.conv = nn.Conv2d(ni, nf, ks, padding=ks//2, stride=stride, bias=True)
         self.relu = GeneralRelu(sub=sub, **kwargs)
     
-    def forward(self, x): return self.relu(self.conv(x))
+    def forward(self, x): 
+        return self.relu(self.conv(x))
     
     @property
-    def bias(self): return -self.relu.sub
+    def bias(self): 
+        return -self.relu.sub
     @bias.setter
-    def bias(self,v): self.relu.sub = -v
+    def bias(self,v): 
+        self.relu.sub = -v
     @property
-    def weight(self): return self.conv.weight
+    def weight(self): 
+        return self.conv.weight
 
 
 
@@ -95,7 +109,8 @@ learn,run = get_learn_run(nfs, data, 0.6, ConvLayer, cbs=cbfs)
 #export
 def get_batch(dl, run):
     run.xb,run.yb = next(iter(dl))
-    for cb in run.cbs: cb.set_runner(run)
+    for cb in run.cbs: 
+        cb.set_runner(run)
     run('begin_batch')
     return run.xb,run.yb
 
@@ -126,7 +141,7 @@ mods = find_modules(learn.model, lambda o: isinstance(o,ConvLayer))
 
 
 
-mods
+print(mods)
 
 
 # This is a helper function to grab the mean and std of the output of a hooked layer.
@@ -134,13 +149,17 @@ mods
 
 
 def append_stat(hook, mod, inp, outp):
+    #model: ConvLayer, inp: tuple of data
     d = outp.data
     hook.mean,hook.std = d.mean().item(),d.std().item()
 
 
 
 
-mdl = learn.model.cuda()
+if run_on_gpu:
+    mdl = learn.model.cuda()
+else:
+    mdl = learn.model
 
 
 # So now we can look at the mean and std of the conv layers of our model.
@@ -149,20 +168,32 @@ mdl = learn.model.cuda()
 
 with Hooks(mods, append_stat) as hooks:
     mdl(xb)
-    for hook in hooks: print(hook.mean,hook.std)
+    for hook in hooks: 
+        print(hook.mean,hook.std)
 
 
+# Note above means and std dev are not 0 and 1
+# 
 # We first adjust the bias terms to make the means 0, then we adjust the standard deviations to make the stds 1 (with a threshold of 1e-3). The `mdl(xb) is not None` clause is just there to pass `xb` through `mdl` and compute all the activations so that the hooks get updated. 
+# 
+# where xb is our minibatch
+
+# Also note this is run on model pre-training
 
 
 
 #export
 def lsuv_module(m, xb):
+    #register_forward_hook for the append_stat function
+    #h is then a Hook class
     h = Hook(m, append_stat)
-
-    while mdl(xb) is not None and abs(h.mean)  > 1e-3: m.bias -= h.mean
-    while mdl(xb) is not None and abs(h.std-1) > 1e-3: m.weight.data /= h.std
-
+    #see append_stat() function above - thats where we set the .mean and .std properties for Hook
+    print(f'h.mean: {h.mean}')
+    while mdl(xb) is not None and abs(h.mean)  > 1e-3: 
+        m.bias -= h.mean
+    while mdl(xb) is not None and abs(h.std-1) > 1e-3: 
+        m.weight.data /= h.std
+    #remove the hook
     h.remove()
     return h.mean,h.std
 

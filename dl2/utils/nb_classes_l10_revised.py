@@ -39,9 +39,12 @@ class TrainEvalCallback(Callback):
         self.model.eval()
         self.run.in_train=False
 
-class CancelTrainException(Exception): pass
-class CancelEpochException(Exception): pass
-class CancelBatchException(Exception): pass
+class CancelTrainException(Exception):
+    pass
+class CancelEpochException(Exception):
+    pass
+class CancelBatchException(Exception):
+    pass
 
 class Runner():
     def __init__(self, cbs=None, cb_funcs=None):
@@ -54,13 +57,17 @@ class Runner():
         self.stop,self.cbs = False,[TrainEvalCallback()]+cbs
 
     @property
-    def opt(self):       return self.learn.opt
+    def opt(self):
+        return self.learn.opt
     @property
-    def model(self):     return self.learn.model
+    def model(self):
+        return self.learn.model
     @property
-    def loss_func(self): return self.learn.loss_func
+    def loss_func(self):
+        return self.learn.loss_func
     @property
-    def data(self):      return self.learn.data
+    def data(self):
+        return self.learn.data
 
     def one_batch(self, xb, yb):
         try:
@@ -70,7 +77,8 @@ class Runner():
             self('after_pred')
             self.loss = self.loss_func(self.pred, self.yb)
             self('after_loss')
-            if not self.in_train: return
+            if not self.in_train:
+                return
             self.loss.backward()
             self('after_backward')
             self.opt.step()
@@ -83,7 +91,8 @@ class Runner():
         self.iters = len(dl)
         try:
             for xb,yb in dl: self.one_batch(xb, yb)
-        except CancelEpochException: self('after_cancel_epoch')
+        except CancelEpochException:
+            self('after_cancel_epoch')
 
     def fit(self, epochs, learn):
         self.epochs,self.learn,self.loss = epochs,learn,tensor(0.)
@@ -93,13 +102,16 @@ class Runner():
             self('begin_fit')
             for epoch in range(epochs):
                 self.epoch = epoch
-                if not self('begin_epoch'): self.all_batches(self.data.train_dl)
+                if not self('begin_epoch'):
+                    self.all_batches(self.data.train_dl)
 
                 with torch.no_grad():
-                    if not self('begin_validate'): self.all_batches(self.data.valid_dl)
+                    if not self('begin_validate'):
+                        self.all_batches(self.data.valid_dl)
                 self('after_epoch')
 
-        except CancelTrainException: self('after_cancel_train')
+        except CancelTrainException:
+            self('after_cancel_train')
         finally:
             self('after_fit')
             self.learn = None
