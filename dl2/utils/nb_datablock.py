@@ -11,6 +11,8 @@ from torch import tensor
 import math
 import PIL,os,mimetypes
 
+RUN_DATA_ON_GPU=True
+
 Path.ls = lambda x: list(x.iterdir())
 
 image_extensions = set(k for k,v in mimetypes.types_map.items() if v.startswith('image/'))
@@ -234,7 +236,11 @@ def normalize_chan(x, mean, std):
 
 _m = tensor([0.47, 0.48, 0.45])
 _s = tensor([0.29, 0.28, 0.30])
-norm_imagenette = partial(normalize_chan, mean=_m.cuda(), std=_s.cuda())
+
+if RUN_DATA_ON_GPU:
+    norm_imagenette = partial(normalize_chan, mean=_m.cuda(), std=_s.cuda())
+else:
+    norm_imagenette = partial(normalize_chan, mean=_m, std=_s)
 
 
 def prev_pow_2(x):
@@ -255,7 +261,9 @@ def get_cnn_layers(data, nfs, layer, **kwargs):
     return layers
 
 def get_cnn_model(data, nfs, layer, **kwargs):
-    return nn.Sequential(*get_cnn_layers(data, nfs, layer, **kwargs))
+    print(f'>>get_cnn_model() data.c_in: {data.c_in}')
+    model= nn.Sequential(*get_cnn_layers(data, nfs, layer, **kwargs))
+    return model
 
 def get_learn_run(nfs, data, lr, layer, cbs=None, opt_func=None, **kwargs):
     model = get_cnn_model(data, nfs, layer, **kwargs)
@@ -264,8 +272,9 @@ def get_learn_run(nfs, data, lr, layer, cbs=None, opt_func=None, **kwargs):
 
 def model_summary(run, learn, data, find_all=False):
     xb,yb = get_batch(data.valid_dl, run)
-    device = next(learn.model.parameters()).device#Model may not be on the GPU yet
-    xb,yb = xb.to(device),yb.to(device)
+    if RUN_DATA_ON_GPU:
+        device = next(learn.model.parameters()).device#Model may not be on the GPU yet
+        xb,yb = xb.to(device),yb.to(device)
     mods = find_modules(learn.model, is_lin_layer) if find_all else learn.model.children()
     f = lambda hook,mod,inp,out: print(f"{mod}\n{out.shape}\n")
     with Hooks(mods, f) as hooks:

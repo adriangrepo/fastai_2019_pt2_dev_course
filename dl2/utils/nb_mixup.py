@@ -3,6 +3,8 @@ from utils.nb_classes_l10_revised import *
 
 from torch.distributions.beta import Beta
 
+RUN_MIXUP_ON_GPU=True
+
 class NoneReduce():
     def __init__(self, loss_func):
         self.loss_func,self.old_red = loss_func,None
@@ -33,9 +35,15 @@ class MixUp(Callback):
 
     def begin_batch(self):
         if not self.in_train: return #Only mixup things during training
-        lambd = self.distrib.sample((self.yb.size(0),)).squeeze().to(self.xb.device)
+        if RUN_MIXUP_ON_GPU:
+            lambd = self.distrib.sample((self.yb.size(0),)).squeeze().to(self.xb.device)
+        else:
+            lambd = self.distrib.sample((self.yb.size(0),)).squeeze().to(self.xb)
         self.lambd = torch.cat([lambd[:,None], 1-lambd[:,None]], 1).max(1)[0]
-        shuffle = torch.randperm(self.yb.size(0)).to(self.xb.device)
+        if RUN_MIXUP_ON_GPU:
+            shuffle = torch.randperm(self.yb.size(0)).to(self.xb.device)
+        else:
+            shuffle = torch.randperm(self.yb.size(0)).to(self.xb)
         xb1,self.yb1 = self.xb[shuffle],self.yb[shuffle]
         self.run.xb = self.xb * self.lambd[:,None,None,None] + xb1 * (1-self.lambd)[:,None,None,None]
 

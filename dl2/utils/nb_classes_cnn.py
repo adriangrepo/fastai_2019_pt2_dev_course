@@ -11,6 +11,7 @@ from functools import partial
 
 torch.set_num_threads(2)
 
+RUN_CNN_ON_GPU=True
 #nb_06
 
 class Lambda(nn.Module):
@@ -23,15 +24,24 @@ class Lambda(nn.Module):
 
 class CudaCallback(Callback):
     def begin_fit(self):
-        self.model.cuda()
+        print(f'CudaCallback.begin_fit() RUN_CNN_ON_GPU: {RUN_CNN_ON_GPU}')
+        if RUN_CNN_ON_GPU:
+            print('Using GPU')
+            self.model.cuda()
+        else:
+            print('Using CPU')
     def begin_batch(self):
-        self.run.xb,self.run.yb = self.xb.cuda(),self.yb.cuda()
+        if RUN_CNN_ON_GPU:
+            self.run.xb,self.run.yb = self.xb.cuda(),self.yb.cuda()
+        else:
+            self.run.xb, self.run.yb = self.xb, self.yb
 
 class BatchTransformXCallback(Callback):
     _order=2
     def __init__(self, tfm):
         self.tfm = tfm
     def begin_batch(self):
+        #print(f'BatchTransformXCallback.begin_batch() tfm: {self.tfm}, batch is_cuda: {self.xb.is_cuda}')
         self.run.xb = self.tfm(self.xb)
 
 def get_runner(model, data, lr=0.6, cbs=None, opt_func=None, loss_func = F.cross_entropy):

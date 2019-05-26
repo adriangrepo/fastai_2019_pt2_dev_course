@@ -84,13 +84,15 @@ class Runner():
             self.opt.step()
             self('after_step')
             self.opt.zero_grad()
-        except CancelBatchException: self('after_cancel_batch')
+        except CancelBatchException:
+            self('after_cancel_batch')
         finally: self('after_batch')
 
     def all_batches(self, dl):
         self.iters = len(dl)
         try:
-            for xb,yb in dl: self.one_batch(xb, yb)
+            for xb,yb in dl:
+                self.one_batch(xb, yb)
         except CancelEpochException:
             self('after_cancel_epoch')
 
@@ -171,7 +173,8 @@ class ParamScheduler(Callback):
             pg[self.pname] = f(self.n_epochs/self.epochs)
 
     def begin_batch(self):
-        if self.in_train: self.set_param()
+        if self.in_train:
+            self.set_param()
 
 class LR_Find(Callback):
     _order=1
