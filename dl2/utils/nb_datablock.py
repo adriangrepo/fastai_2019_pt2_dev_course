@@ -232,6 +232,12 @@ def databunchify(sd, bs, c_in=None, c_out=None, **kwargs):
 SplitData.to_databunch = databunchify
 
 def normalize_chan(x, mean, std):
+    #print(f'>>normalize_chan is_cuda x: {x.is_cuda},mean: {mean.is_cuda},std: {std.is_cuda}')
+    if not RUN_DATA_ON_GPU:
+        mean = mean.cpu()
+        std = std.cpu()
+        x = x.cpu()
+        return (x - mean[..., None, None]) / std[..., None, None]
     return (x-mean[...,None,None]) / std[...,None,None]
 
 _m = tensor([0.47, 0.48, 0.45])

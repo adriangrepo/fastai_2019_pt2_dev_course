@@ -1,5 +1,6 @@
 from functools import partial
 from utils.nb_functions import camel2snake, listify
+import matplotlib.pyplot as plt
 import re
 import torch
 from torch import tensor
@@ -44,6 +45,7 @@ class Callback():
 
 class TrainEvalCallback(Callback):
     def begin_fit(self):
+        print(f'>>TrainEvalCallback.begin_fit()')
         self.run.n_epochs=0.
         self.run.n_iter=0
 
@@ -71,16 +73,21 @@ class Runner():
         self.stop,self.cbs = False,[TrainEvalCallback()]+cbs
 
     @property
-    def opt(self):       return self.learn.opt
+    def opt(self):
+        return self.learn.opt
     @property
-    def model(self):     return self.learn.model
+    def model(self):
+        return self.learn.model
     @property
-    def loss_func(self): return self.learn.loss_func
+    def loss_func(self):
+        return self.learn.loss_func
     @property
-    def data(self):      return self.learn.data
+    def data(self):
+        return self.learn.data
 
     def one_batch(self, xb, yb):
         self.xb,self.yb = xb,yb
+        print(f'l8_to_l10.Runner.one_batch is_cuda xb: {xb.is_cuda}, yb: {yb.is_cuda}')
         if self('begin_batch'): return
         self.pred = self.model(self.xb)
         if self('after_pred'): return
@@ -125,7 +132,8 @@ class Runner():
         return False
 
 class AvgStats():
-    def __init__(self, metrics, in_train): self.metrics,self.in_train = listify(metrics),in_train
+    def __init__(self, metrics, in_train):
+        self.metrics,self.in_train = listify(metrics),in_train
 
     def reset(self):
         self.tot_loss,self.count = 0.,0
@@ -153,6 +161,7 @@ class AvgStats():
 class AvgStatsCallback(Callback):
     def __init__(self, metrics):
         self.train_stats,self.valid_stats = AvgStats(metrics,True),AvgStats(metrics,False)
+        print(f'AvgStatsCallback.__init__() is_cuda train_stats: {self.train_stats.is_cuda}, valid_stats: {self.valid_stats.is_cuda}')
 
     def begin_epoch(self):
         self.train_stats.reset()
@@ -160,7 +169,9 @@ class AvgStatsCallback(Callback):
 
     def after_loss(self):
         stats = self.train_stats if self.in_train else self.valid_stats
-        with torch.no_grad(): stats.accumulate(self.run)
+        print(f'AvgStatsCallback.after_loss() is_cuda stats: {stats.is_cuda}')
+        with torch.no_grad():
+            stats.accumulate(self.run)
 
     def after_epoch(self):
         print(self.train_stats)
@@ -168,12 +179,14 @@ class AvgStatsCallback(Callback):
 
 class Recorder(Callback):
     def begin_fit(self):
+        print(f'>>l8_to_l10.Recorder.begin_fit()')
         self.lrs = [[] for _ in self.opt.param_groups]
         self.losses = []
 
     def after_batch(self):
         if not self.in_train: return
-        for pg,lr in zip(self.opt.param_groups,self.lrs): lr.append(pg['lr'])
+        for pg,lr in zip(self.opt.param_groups,self.lrs):
+            lr.append(pg['lr'])
         self.losses.append(self.loss.detach().cpu())
 
     def plot_lr  (self, pgid=-1):

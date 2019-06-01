@@ -47,7 +47,8 @@ class MixUp(Callback):
         xb1,self.yb1 = self.xb[shuffle],self.yb[shuffle]
         self.run.xb = self.xb * self.lambd[:,None,None,None] + xb1 * (1-self.lambd)[:,None,None,None]
 
-    def after_fit(self): self.run.loss_func = self.old_loss_func
+    def after_fit(self):
+        self.run.loss_func = self.old_loss_func
 
     def loss_func(self, pred, yb):
         if not self.in_train: return self.old_loss_func(pred, yb)

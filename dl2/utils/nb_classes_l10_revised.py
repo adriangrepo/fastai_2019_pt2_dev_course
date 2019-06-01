@@ -3,12 +3,15 @@ from utils.nb_functions import camel2snake, listify
 import re
 import torch
 from torch import tensor, nn
+import matplotlib.pyplot as plt
 from utils.nb_classes_l8_to_10 import AvgStats
 
 class Callback():
     _order=0
-    def set_runner(self, run): self.run=run
-    def __getattr__(self, k): return getattr(self.run, k)
+    def set_runner(self, run):
+        self.run=run
+    def __getattr__(self, k):
+        return getattr(self.run, k)
 
     @property
     def name(self):
@@ -17,11 +20,16 @@ class Callback():
 
     def __call__(self, cb_name):
         f = getattr(self, cb_name, None)
-        if f and f(): return True
+        if f:
+            #then callback exists and is now OK to call
+            if f():
+                #here is where we actually run the method
+                return True
         return False
 
 class TrainEvalCallback(Callback):
     def begin_fit(self):
+        print(f'>>TrainEvalCallback.begin_fit()')
         self.run.n_epochs=0.
         self.run.n_iter=0
 
@@ -70,8 +78,10 @@ class Runner():
         return self.learn.data
 
     def one_batch(self, xb, yb):
+
         try:
             self.xb,self.yb = xb,yb
+            #print(f'l10_revised.Runner.one_batch is_cuda xb: {xb.is_cuda}, yb: {yb.is_cuda}')
             self('begin_batch')
             self.pred = self.model(self.xb)
             self('after_pred')
@@ -91,17 +101,25 @@ class Runner():
     def all_batches(self, dl):
         self.iters = len(dl)
         try:
+            i=0
             for xb,yb in dl:
+                if i==0:
+                    print(f'Runner.all_batches is_cuda xb: {xb.is_cuda}, yb: {yb.is_cuda}')
                 self.one_batch(xb, yb)
+                i+=1
         except CancelEpochException:
+            print('Runner.CancelEpochException')
             self('after_cancel_epoch')
 
     def fit(self, epochs, learn):
         self.epochs,self.learn,self.loss = epochs,learn,tensor(0.)
 
         try:
-            for cb in self.cbs: cb.set_runner(self)
+            for cb in self.cbs:
+                #print(f'Runner.fit() cb: {cb}')
+                cb.set_runner(self)
             self('begin_fit')
+
             for epoch in range(epochs):
                 self.epoch = epoch
                 if not self('begin_epoch'):
@@ -112,7 +130,9 @@ class Runner():
                         self.all_batches(self.data.valid_dl)
                 self('after_epoch')
 
+
         except CancelTrainException:
+            print('Runner.CancelTrainException')
             self('after_cancel_train')
         finally:
             self('after_fit')
@@ -120,7 +140,10 @@ class Runner():
 
     def __call__(self, cb_name):
         res = False
-        for cb in sorted(self.cbs, key=lambda x: x._order): res = cb(cb_name) and res
+        for cb in sorted(self.cbs, key=lambda x: x._order):
+            #print(f'Runner.__call__() calling cb_name: {cb_name} on cb: {cb.name}')
+            temp_res= cb(cb_name)
+            res = temp_res and res
         return res
 
 class AvgStatsCallback(Callback):
@@ -141,16 +164,21 @@ class AvgStatsCallback(Callback):
 
 class Recorder(Callback):
     def begin_fit(self):
+        print(f'>>Recorder.begin_fit()')
         self.lrs = [[] for _ in self.opt.param_groups]
         self.losses = []
 
     def after_batch(self):
-        if not self.in_train: return
-        for pg,lr in zip(self.opt.param_groups,self.lrs): lr.append(pg['lr'])
+        if not self.in_train:
+            return
+        for pg,lr in zip(self.opt.param_groups,self.lrs):
+            lr.append(pg['lr'])
         self.losses.append(self.loss.detach().cpu())
 
-    def plot_lr  (self, pgid=-1): plt.plot(self.lrs[pgid])
-    def plot_loss(self, skip_last=0): plt.plot(self.losses[:len(self.losses)-skip_last])
+    def plot_lr  (self, pgid=-1):
+        plt.plot(self.lrs[pgid])
+    def plot_loss(self, skip_last=0):
+        plt.plot(self.losses[:len(self.losses)-skip_last])
 
     def plot(self, skip_last=0, pgid=-1):
         losses = [o.item() for o in self.losses]
@@ -164,6 +192,7 @@ class ParamScheduler(Callback):
     def __init__(self, pname, sched_funcs): self.pname,self.sched_funcs = pname,sched_funcs
 
     def begin_fit(self):
+        print(f'>>ParamScheduler.begin_fit()')
         if not isinstance(self.sched_funcs, (list,tuple)):
             self.sched_funcs = [self.sched_funcs] * len(self.opt.param_groups)
 
