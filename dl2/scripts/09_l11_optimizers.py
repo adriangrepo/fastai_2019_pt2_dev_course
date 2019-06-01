@@ -11,6 +11,8 @@
 
 
 #export
+import time
+import sys
 from utils.nb_functions import *
 from utils.nb_classes_l8_to_10 import *
 from utils.nb_classes_l10_revised import *
@@ -23,10 +25,11 @@ import utils.nb_datablock as nb_datablock
 
 
 #set to false for setting breakpoints in debugger
+#is really slow on the CPU, but useful if want to deeply follow the code
 run_on_gpu=True
 
-nb_classes_cnn.RUN_CNN_ON_GPU=False
-nb_datablock.RUN_DATA_ON_GPU=False
+nb_classes_cnn.RUN_CNN_ON_GPU=True
+nb_datablock.RUN_DATA_ON_GPU=True
 
 
 # ## Imagenette data
@@ -69,9 +72,31 @@ cbfs = [partial(AvgStatsCallback,accuracy), CudaCallback,
 learn,run = get_learn_run(nfs, data, 0.4, conv_layer, cbs=cbfs)
 
 
-print('fit')
+# <pre>
+# data is a DataBunch with properties:
+#     c_in
+#     c_out
+#     train_dl
+#     train_ds
+#     valid_dl
+#     valid_ds
+# </pre>
 
+# run_on_gpu: True, elapsed: 5.5087034702301025
+
+# TODO
+# 
+# Debug why when run on CPU I get 
+# ValueError: Expected input batch_size (128) to match target batch_size (94).
+#     
+# on run.fit(). Only difference afaik is .cpu() instead of .cuda()
+
+
+
+start = time.time()
 run.fit(1, learn)
+end=time.time()
+print(f'run_on_gpu: {run_on_gpu}, elapsed: {end-start}')
 
 
 # ## Refining the optimizer
@@ -82,16 +107,24 @@ run.fit(1, learn)
 # 
 # We build the equivalent from scratch, only ours will be more flexible. In our implementation, the step function loops over all the parameters to execute the step using stepper functions that we have to provide when initializing the optimizer.
 
+# Lesson 11 1:09
+
 
 
 class Optimizer():
     def __init__(self, params, steppers, **defaults):
         # might be a generator
+        #parameter tensors = all weights and biases
         self.param_groups = list(params)
         # ensure params is a list of lists
-        if not isinstance(self.param_groups[0], list): self.param_groups = [self.param_groups]
+        if not isinstance(self.param_groups[0], list): 
+            self.param_groups = [self.param_groups]
+            #eg lr, momentun, epsilon/beta in adam etc
         self.hypers = [{**defaults} for p in self.param_groups]
+        print(f'self.hypers as defaults in params: {self.hypers}')
         self.steppers = listify(steppers)
+        for i, f in enumerate(self.steppers):
+            print(f'steppers {i}: {f.__name__}')
 
     def grad_params(self):
         return [(p,hyper) for pg,hyper in zip(self.param_groups,self.hypers)
@@ -99,6 +132,7 @@ class Optimizer():
 
     def zero_grad(self):
         for p,hyper in self.grad_params():
+            #remove gradient computation history
             p.grad.detach_()
             p.grad.zero_()
 
@@ -112,9 +146,16 @@ class Optimizer():
 
 #export
 def sgd_step(p, lr, **kwargs):
+    #even though it looks like we are just adding, 
+    #is actully doing p.data=p.data.add_(-lr*p.grad.data)
+    #I spent an hour working this out, then Jenermy mentions this at 1:30:31 :-)
     p.data.add_(-lr, p.grad.data)
+    #print(f'<<sgd_step p.data: {p.data}')
     return p
 
+
+# Note within Optimizer we added a print to show what (hyper)params and steppers we pass in 
+# Parameter group = Fastai layer group
 
 
 
@@ -130,12 +171,15 @@ class Recorder(Callback):
     def begin_fit(self): self.lrs,self.losses = [],[]
 
     def after_batch(self):
-        if not self.in_train: return
+        if not self.in_train: 
+            return
         self.lrs.append(self.opt.hypers[-1]['lr'])
         self.losses.append(self.loss.detach().cpu())        
 
-    def plot_lr  (self): plt.plot(self.lrs)
-    def plot_loss(self): plt.plot(self.losses)
+    def plot_lr  (self): 
+        plt.plot(self.lrs)
+    def plot_loss(self): 
+        plt.plot(self.losses)
         
     def plot(self, skip_last=0):
         losses = [o.item() for o in self.losses]
@@ -149,7 +193,8 @@ class ParamScheduler(Callback):
         self.pname,self.sched_funcs = pname,listify(sched_funcs)
 
     def begin_batch(self): 
-        if not self.in_train: return
+        if not self.in_train: 
+            return
         fs = self.sched_funcs
         if len(fs)==1: fs = fs*len(self.opt.param_groups)
         pos = self.n_epochs/self.epochs
@@ -162,7 +207,8 @@ class LR_Find(Callback):
         self.best_loss = 1e9
         
     def begin_batch(self): 
-        if not self.in_train: return
+        if not self.in_train: 
+            return
         pos = self.n_iter/self.max_iter
         lr = self.min_lr * (self.max_lr/self.min_lr) ** pos
         for pg in self.opt.hypers: pg['lr'] = lr
@@ -192,8 +238,16 @@ cbfs = [partial(AvgStatsCallback,accuracy),
 learn,run = get_learn_run(nfs, data, 0.4, conv_layer, cbs=cbfs, opt_func=opt_func)
 
 
+# on cpu: elapsed: 101.67123055458069
+# 
+# on gpu: elapsed: 5.636744499206543
 
 
+
+start = time.time()
+run.fit(1, learn)
+end = time.time()
+print(f'elapsed: {end-start}')
 
 
 
@@ -269,12 +323,14 @@ l2_reg._defaults = dict(wd=0.)
 
 
 #export
+#only update if missing
 def maybe_update(os, dest, f):
     for o in os:
         for k,v in f(o).items():
             if k not in dest: dest[k] = v
 
-def get_defaults(d): return getattr(d,'_defaults',{})
+def get_defaults(d): 
+    return getattr(d,'_defaults',{})
 
 
 # This is the same as before, we just take the default values of the steppers when none are provided in the kwargs.
@@ -313,6 +369,11 @@ sgd_opt = partial(Optimizer, steppers=[weight_decay, sgd_step])
 
 
 
+cbfs
+
+
+
+
 learn,run = get_learn_run(nfs, data, 0.4, conv_layer, cbs=cbfs, opt_func=sgd_opt)
 
 
@@ -343,7 +404,7 @@ test_eq(opt.hypers[0]['lr'], 0.1)
 
 
 
-cbfs = [partial(AvgStatsCallback,accuracy), CudaCallback]
+cbfs = [partial(AvgStatsCallback,accuracy), CudaCallback, Recorder]
 
 
 
@@ -354,6 +415,11 @@ learn,run = get_learn_run(nfs, data, 0.3, conv_layer, cbs=cbfs, opt_func=partial
 
 
 run.fit(1, learn)
+
+
+
+
+run.recorder.plot_loss()
 
 
 # This is already better than the baseline!
@@ -386,6 +452,7 @@ class StatefulOptimizer(Optimizer):
             for stat in self.stats: state = stat.update(p, state, **hyper)
             compose(p, self.steppers, **state, **hyper)
             self.state[p] = state
+        #print(f'size of state: {sys.getsizeof(self.state)}')
 
 
 
@@ -393,8 +460,10 @@ class StatefulOptimizer(Optimizer):
 #export
 class Stat():
     _defaults = {}
-    def init_state(self, p): raise NotImplementedError
-    def update(self, p, state, **kwargs): raise NotImplementedError    
+    def init_state(self, p): 
+        raise NotImplementedError
+    def update(self, p, state, **kwargs): 
+        raise NotImplementedError    
 
 
 # Here is an example of `Stat`:
@@ -404,7 +473,8 @@ class Stat():
 class AverageGrad(Stat):
     _defaults = dict(mom=0.9)
 
-    def init_state(self, p): return {'grad_avg': torch.zeros_like(p.grad.data)}
+    def init_state(self, p): 
+        return {'grad_avg': torch.zeros_like(p.grad.data)}
     def update(self, p, state, mom, **kwargs):
         state['grad_avg'].mul_(mom).add_(p.grad.data)
         return state
@@ -443,7 +513,9 @@ run.fit(1, learn)
 
 
 x = torch.linspace(-4, 4, 200)
+#y is random, avg of 0.3
 y = torch.randn(200) + 0.3
+#momentums
 betas = [0.5, 0.7, 0.9, 0.99]
 
 
@@ -466,20 +538,24 @@ def plot_mom(f):
 
 
 def mom1(avg, beta, yi, i): 
-    if avg is None: avg=yi
+    if avg is None: 
+        avg=yi
+    #momentum function
     res = beta*avg + yi
     return res,res
 plot_mom(mom1)
 
 
-# As we can see, with a too high value, it may go way too high with no way to change its course.
+# As we can see, with a too high value for momentum, it may go way too high with no way to change its course- ie totally wrong.
 # 
 # Another way to smooth noisy data is to do an exponentially weighted moving average. In this case, there is a dampening of (1-beta) in front of the new value, which is less trusted than the current average. We'll define `lin_comb` (*linear combination*) to make this easier (note that in the lesson this was named `ewma`).
 
 
 
 #export
-def lin_comb(v1, v2, beta): return beta*v1 + (1-beta)*v2
+#with dampening
+def lin_comb(v1, v2, beta): 
+    return beta*v1 + (1-beta)*v2
 
 
 
@@ -491,7 +567,7 @@ def mom2(avg, beta, yi, i):
 plot_mom(mom2)
 
 
-# We can see it gets to a zero-constant when the data is purely random. If the data has a certain shape, it will get that shape (with some delay for high beta).
+# We can see it gets to a zero-constant when the data is purely random. If the data has a certain shape, it will get that shape (with some delay for high beta). In last image, item 2 is 0.99 * item1 + 0.01 * item2 - ie too much influence from item 1
 
 
 
@@ -542,6 +618,8 @@ plot_mom(mom3)
 # ## Adam and friends
 
 # In Adam, we use the gradient averages but with dampening (not like in SGD with momentum), so let's add this to the `AverageGrad` class.
+# 
+# Adam = (Dampened debised momentum )/ (Dampened debiased root sum of squared gradients)
 
 
 
@@ -549,8 +627,10 @@ plot_mom(mom3)
 class AverageGrad(Stat):
     _defaults = dict(mom=0.9)
     
-    def __init__(self, dampening:bool=False): self.dampening=dampening
-    def init_state(self, p): return {'grad_avg': torch.zeros_like(p.grad.data)}
+    def __init__(self, dampening:bool=False): 
+        self.dampening=dampening
+    def init_state(self, p): 
+        return {'grad_avg': torch.zeros_like(p.grad.data)}
     def update(self, p, state, mom, **kwargs):
         state['mom_damp'] = 1-mom if self.dampening else 1.
         state['grad_avg'].mul_(mom).add_(state['mom_damp'], p.grad.data)
@@ -565,8 +645,10 @@ class AverageGrad(Stat):
 class AverageSqrGrad(Stat):
     _defaults = dict(sqr_mom=0.99)
     
-    def __init__(self, dampening:bool=True): self.dampening=dampening
-    def init_state(self, p): return {'sqr_avg': torch.zeros_like(p.grad.data)}
+    def __init__(self, dampening:bool=True): 
+        self.dampening=dampening
+    def init_state(self, p): 
+        return {'sqr_avg': torch.zeros_like(p.grad.data)}
     def update(self, p, state, sqr_mom, **kwargs):
         state['sqr_damp'] = 1-sqr_mom if self.dampening else 1.
         state['sqr_avg'].mul_(sqr_mom).addcmul_(state['sqr_damp'], p.grad.data, p.grad.data)
@@ -579,7 +661,8 @@ class AverageSqrGrad(Stat):
 
 #export
 class StepCount(Stat):
-    def init_state(self, p): return {'step': 0}
+    def init_state(self, p): 
+        return {'step': 0}
     def update(self, p, state, **kwargs):
         state['step'] += 1
         return state

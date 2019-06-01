@@ -48,8 +48,10 @@ nfs = [32]*4
 
 
 #export
-def param_getter(m): return m.parameters()
+def param_getter(m): 
+    return m.parameters()
 
+#added code from Learner, renamed Runner to Learner
 class Learner():
     def __init__(self, model, data, loss_func, opt_func=sgd_opt, lr=1e-2, splitter=param_getter,
                  cbs=None, cb_funcs=None):
