@@ -1,29 +1,33 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+# In[101]:
 
 
+get_ipython().run_line_magic('load_ext', 'autoreload')
+get_ipython().run_line_magic('autoreload', '2')
+
+get_ipython().run_line_magic('matplotlib', 'inline')
 
 
+# Note here I'm using a clean import of all exp sctripts concatenated into one file.
+# Couldn't work out where issue with Optimizer was comming from when impoting from manually generated scripts
+
+# In[125]:
 
 
+from exp.nb_all import *
 
-#export
-from utils.nb_functions import *
-#from utils.nb_classes_l10_revised import *
-
-from utils.nb_augment import *
-from utils.nb_optimizer import *
-from utils.nb_mixup import *
-from utils.nb_learner import Learner
 
 # ## Imagenet(te) training
 
+# In[126]:
 
 
 path = datasets.untar_data(datasets.URLs.IMAGENETTE_160)
 
 
+# In[127]:
 
 
 size = 128
@@ -42,6 +46,7 @@ data = ll.to_databunch(bs, c_in=3, c_out=10, num_workers=8)
 
 # ## XResNet
 
+# In[128]:
 
 
 #export
@@ -54,6 +59,7 @@ def conv(ni, nf, ks=3, stride=1, bias=False):
     return nn.Conv2d(ni, nf, kernel_size=ks, stride=stride, padding=ks//2, bias=bias)
 
 
+# In[129]:
 
 
 #export
@@ -66,12 +72,15 @@ def init_cnn(m):
 
 def conv_layer(ni, nf, ks=3, stride=1, zero_bn=False, act=True):
     bn = nn.BatchNorm2d(nf)
+    #intialize weights to either 0 or 1, third layer set to zero
+    #see 59:00 in video for explanation
     nn.init.constant_(bn.weight, 0. if zero_bn else 1.)
     layers = [conv(ni, nf, ks, stride=stride), bn]
     if act: layers.append(act_fn)
     return nn.Sequential(*layers)
 
 
+# In[130]:
 
 
 #export
@@ -87,19 +96,25 @@ class ResBlock(nn.Module):
             conv_layer(nh, nf, 1, zero_bn=True, act=False)
         ]
         self.convs = nn.Sequential(*layers)
+        #see fig 2 in bag of tricks paper
         self.idconv = noop if ni==nf else conv_layer(ni, nf, 1, act=False)
         self.pool = noop if stride==1 else nn.AvgPool2d(2, ceil_mode=True)
 
     def forward(self, x): return act_fn(self.convs(x) + self.idconv(self.pool(x)))
 
 
+# In[131]:
 
 
 #export
 class XResNet(nn.Sequential):
     @classmethod
     def create(cls, expansion, layers, c_in=3, c_out=1000):
+        #layers
+        #inputs = chanells in , defaults to 3, outputs=32 (cin+1*8)-see bag of tricks recommendation.
+        #nvidia cards like multiples of 8
         nfs = [c_in, (c_in+1)*8, 64, 64]
+        #stem is start of the cnn
         stem = [conv_layer(nfs[i], nfs[i+1], stride=2 if i==0 else 1)
             for i in range(3)]
 
@@ -124,18 +139,25 @@ class XResNet(nn.Sequential):
               for i in range(n_blocks)])
 
 
+# In[132]:
 
 
 #export
-def xresnet18 (**kwargs): return XResNet.create(1, [2, 2,  2, 2], **kwargs)
-def xresnet34 (**kwargs): return XResNet.create(1, [3, 4,  6, 3], **kwargs)
-def xresnet50 (**kwargs): return XResNet.create(4, [3, 4,  6, 3], **kwargs)
-def xresnet101(**kwargs): return XResNet.create(4, [3, 4, 23, 3], **kwargs)
-def xresnet152(**kwargs): return XResNet.create(4, [3, 8, 36, 3], **kwargs)
+def xresnet18 (**kwargs): 
+    return XResNet.create(1, [2, 2,  2, 2], **kwargs)
+def xresnet34 (**kwargs): 
+    return XResNet.create(1, [3, 4,  6, 3], **kwargs)
+def xresnet50 (**kwargs): 
+    return XResNet.create(4, [3, 4,  6, 3], **kwargs)
+def xresnet101(**kwargs): 
+    return XResNet.create(4, [3, 4, 23, 3], **kwargs)
+def xresnet152(**kwargs): 
+    return XResNet.create(4, [3, 8, 36, 3], **kwargs)
 
 
 # ## Train
 
+# In[133]:
 
 
 cbfs = [partial(AvgStatsCallback,accuracy), ProgressCallback, CudaCallback,
@@ -144,6 +166,7 @@ cbfs = [partial(AvgStatsCallback,accuracy), ProgressCallback, CudaCallback,
        ]
 
 
+# In[134]:
 
 
 loss_func = LabelSmoothingCrossEntropy()
@@ -151,6 +174,7 @@ arch = partial(xresnet18, c_out=10)
 opt_func = adam_opt(mom=0.9, mom_sqr=0.99, eps=1e-6, wd=1e-2)
 
 
+# In[135]:
 
 
 #export
@@ -164,6 +188,7 @@ def get_batch(dl, learn):
 
 # We need to replace the old `model_summary` since it used to take a `Runner`.
 
+# In[136]:
 
 
 # export
@@ -174,37 +199,44 @@ def model_summary(model, data, find_all=False, print_mod=False):
     with Hooks(mods, f) as hooks: learn.model(xb)
 
 
-print('creating learner')
+# In[137]:
+
 
 learn = Learner(model=arch(), data=data, loss_func=loss_func, lr=1, cb_funcs=cbfs, opt_func=opt_func)
 
 
+# In[138]:
 
 
-#learn.model = learn.model.cuda()
-print(model_summary(learn.model, data, print_mod=False))
+learn.model = learn.model.cuda()
+model_summary(learn.model, data, print_mod=False)
 
 
+# In[139]:
 
 
 arch = partial(xresnet34, c_out=10)
 
 
+# In[140]:
 
 
-learn = Learner(arch(), data, loss_func, lr=1, cb_funcs=cbfs, opt_func=opt_func)
+learn = Learner(arch(), data, loss_func, opt_func=opt_func, lr=1, cbs=[LR_Find(), Recorder()], cb_funcs=cbfs)
 
 
+# In[141]:
 
 
-learn.fit(1, cbs=[LR_Find(), Recorder()])
+learn.fit(1)
 
 
+# In[142]:
 
 
 learn.recorder.plot(3)
 
 
+# In[143]:
 
 
 #export
@@ -213,12 +245,14 @@ def create_phases(phases):
     return phases + [1-sum(phases)]
 
 
+# In[144]:
 
 
 print(create_phases(0.3))
 print(create_phases([0.3,0.2]))
 
 
+# In[145]:
 
 
 lr = 1e-2
@@ -228,6 +262,7 @@ sched_lr  = combine_scheds(phases, cos_1cycle_anneal(lr/10., lr, lr/1e5))
 sched_mom = combine_scheds(phases, cos_1cycle_anneal(0.95, 0.85, 0.95))
 
 
+# In[146]:
 
 
 cbsched = [
@@ -235,18 +270,23 @@ cbsched = [
     ParamScheduler('mom', sched_mom)]
 
 
+# In[147]:
 
 
 learn = Learner(arch(), data, loss_func, lr=lr, cb_funcs=cbfs, opt_func=opt_func)
 
 
+# In[148]:
 
 
 learn.fit(5, cbs=cbsched)
 
 
+# refactor all callbacks into a single function
+
 # ## cnn_learner
 
+# In[149]:
 
 
 #export
@@ -265,11 +305,13 @@ def cnn_learner(arch, data, loss_func, opt_func, c_in=None, c_out=None,
     return Learner(arch(**arch_args), data, loss_func, opt_func=opt_func, lr=lr, cb_funcs=cbfs, **kwargs)
 
 
+# In[ ]:
 
 
 learn = cnn_learner(xresnet34, data, loss_func, opt_func, norm=norm_imagenette)
 
 
+# In[ ]:
 
 
 learn.fit(5, cbsched)
@@ -283,10 +325,13 @@ learn.fit(5, cbsched)
 
 # ## Export
 
+# In[ ]:
 
 
+get_ipython().system('./notebook2script.py 11_train_imagenette.ipynb')
 
 
+# In[ ]:
 
 
 

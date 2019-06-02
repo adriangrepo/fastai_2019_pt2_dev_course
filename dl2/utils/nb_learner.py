@@ -31,24 +31,30 @@ class Learner():
             self('after_pred')
             self.loss = self.loss_func(self.pred, self.yb)
             self('after_loss')
-            if not self.in_train: return
+            if not self.in_train:
+                return
             self.loss.backward()
             self('after_backward')
+            #temp = self.opt.func
+            #temp.step()
             self.opt.step()
             self('after_step')
             self.opt.zero_grad()
-        except CancelBatchException: self('after_cancel_batch')
+        except CancelBatchException:
+            self('after_cancel_batch')
         finally: self('after_batch')
 
     def all_batches(self):
         self.iters = len(self.dl)
         try:
-            for i,(xb,yb) in enumerate(self.dl): self.one_batch(i, xb, yb)
+            for i,(xb,yb) in enumerate(self.dl):
+                self.one_batch(i, xb, yb)
         except CancelEpochException: self('after_cancel_epoch')
 
     def do_begin_fit(self, epochs):
         self.epochs,self.loss = epochs,tensor(0.)
-        for cb in self.cbs: cb.set_runner(self)
+        for cb in self.cbs:
+            cb.set_runner(self)
         self('begin_fit')
 
     def do_begin_epoch(self, epoch):
@@ -60,11 +66,13 @@ class Learner():
             self.do_begin_fit(epochs)
             for epoch in range(epochs):
                 self.do_begin_epoch(epoch)
-                if not self('begin_epoch'): self.all_batches()
+                if not self('begin_epoch'):
+                    self.all_batches()
 
                 with torch.no_grad():
                     self.dl = self.data.valid_dl
-                    if not self('begin_validate'): self.all_batches()
+                    if not self('begin_validate'):
+                        self.all_batches()
                 self('after_epoch')
 
         except CancelTrainException: self('after_cancel_train')

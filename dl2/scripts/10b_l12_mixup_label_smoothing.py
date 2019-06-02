@@ -146,6 +146,7 @@ for α,ax in zip([0.1,0.8], axs):
 
 #export
 class NoneReduce():
+    #context manager to handle reduction storage
     def __init__(self, loss_func): 
         self.loss_func,self.old_red = loss_func,None
         
@@ -154,10 +155,12 @@ class NoneReduce():
             self.old_red = getattr(self.loss_func, 'reduction')
             setattr(self.loss_func, 'reduction', 'none')
             return self.loss_func
-        else: return partial(self.loss_func, reduction='none')
+        else: 
+            return partial(self.loss_func, reduction='none')
         
     def __exit__(self, type, value, traceback):
-        if self.old_red is not None: setattr(self.loss_func, 'reduction', self.old_red)    
+        if self.old_red is not None: 
+            setattr(self.loss_func, 'reduction', self.old_red)    
 
 
 # Then we can use it in `MixUp`:
@@ -168,10 +171,13 @@ class NoneReduce():
 from torch.distributions.beta import Beta
 
 def unsqueeze(input, dims):
-    for dim in listify(dims): input = torch.unsqueeze(input, dim)
+    for dim in listify(dims): 
+        input = torch.unsqueeze(input, dim)
     return input
 
 def reduce_loss(loss, reduction='mean'):
+    #reduction
+    #after calculating a loss function for all in mb - return rank 1 tensor of all loss funct for minibatch or return average
     return loss.mean() if reduction=='mean' else loss.sum() if reduction=='sum' else loss    
 
 
@@ -180,24 +186,31 @@ def reduce_loss(loss, reduction='mean'):
 #export
 class MixUp(Callback):
     _order = 90 #Runs after normalization and cuda
-    def __init__(self, alpha:float=0.4): self.distrib = Beta(tensor([alpha]), tensor([alpha]))
+    def __init__(self, alpha:float=0.4): 
+        self.distrib = Beta(tensor([alpha]), tensor([alpha]))
 
-    def begin_fit(self): self.old_loss_func,self.run.loss_func = self.run.loss_func,self.loss_func
+    def begin_fit(self): 
+        self.old_loss_func,self.run.loss_func = self.run.loss_func,self.loss_func
 
     def begin_batch(self):
-        if not self.in_train: return #Only mixup things during training
+        if not self.in_train: 
+            return #Only mixup things during training
         lambd = self.distrib.sample((self.yb.size(0),)).squeeze().to(self.xb.device)
         self.lambd = torch.cat([lambd[:,None], 1-lambd[:,None]], 1).max(1)[0]
         shuffle = torch.randperm(self.yb.size(0)).to(self.xb.device)
+        #random pick
         xb1,self.yb1 = self.xb[shuffle],self.yb[shuffle]
         self.run.xb = self.xb * self.lambd[:,None,None,None] + xb1 * (1-self.lambd)[:,None,None,None]
 
-    def after_fit(self): self.run.loss_func = self.old_loss_func
+    def after_fit(self): 
+        self.run.loss_func = self.old_loss_func
 
     def loss_func(self, pred, yb):
-        if not self.in_train: return self.old_loss_func(pred, yb)
+        if not self.in_train: 
+            return self.old_loss_func(pred, yb)
         with NoneReduce(self.old_loss_func) as loss_func:
             loss1 = loss_func(pred, yb)
+            #randomply pick another image to share with
             loss2 = loss_func(pred, self.yb1)
         return (loss1 * self.lambd + loss2 * (1-self.lambd)).mean()
 
@@ -234,6 +247,8 @@ learn = get_learner(nfs, data, 0.4, conv_layer, cb_funcs=cbfs)
 
 learn.fit(1)
 
+
+# Could do mixup for other than input eg first layer embeddings for first layer for NLP
 
 # Questions: How does softmax interact with all this? Should we jump straight from mixup to inference?
 

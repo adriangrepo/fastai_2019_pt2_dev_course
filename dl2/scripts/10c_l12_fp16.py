@@ -11,8 +11,12 @@
 
 
 from utils.nb_functions import *
+from utils.nb_classes_cnn import *
+from utils.nb_classes_l8_to_10 import *
 from utils.nb_classes_l10_revised import *
 from utils.nb_learner import *
+from utils.nb_optimizer import *
+from utils.nb_progress import *
 from utils.nb_mixup import *
 from torch.nn.utils import parameters_to_vector
 
@@ -357,6 +361,7 @@ def to_model_params(model_pgs, master_pgs, flat_master:bool=False)->None:
 
 class MixedPrecision(Callback):
     _order = 99
+    #use loss_scale multiplier to increate often very small loss values
     def __init__(self, loss_scale=512, flat_master=False):
         assert torch.backends.cudnn.enabled, "Mixed precision training requires cudnn."
         self.loss_scale,self.flat_master = loss_scale,flat_master
@@ -367,18 +372,23 @@ class MixedPrecision(Callback):
         #Changes the optimizer so that the optimization step is done in FP32.
         self.run.opt.param_groups = self.master_pgs #Put those param groups inside our runner.
         
-    def after_fit(self): self.model.float()
+    def after_fit(self): 
+        self.model.float()
 
-    def begin_batch(self): self.run.xb = self.run.xb.half() #Put the inputs to half precision
-    def after_pred(self):  self.run.pred = self.run.pred.float() #Compute the loss in FP32
-    def after_loss(self):  self.run.loss *= self.loss_scale #Loss scaling to avoid gradient underflow
+    def begin_batch(self): 
+        self.run.xb = self.run.xb.half() #Put the inputs to half precision
+    def after_pred(self):  
+        self.run.pred = self.run.pred.float() #Compute the loss in FP32
+    def after_loss(self):  
+        self.run.loss *= self.loss_scale #Loss scaling to avoid gradient underflow
 
     def after_backward(self):
         #Copy the gradients to master and unscale
         to_master_grads(self.model_pgs, self.master_pgs, self.flat_master)
         for master_params in self.master_pgs:
             for param in master_params:
-                if param.grad is not None: param.grad.div_(self.loss_scale)
+                if param.grad is not None: 
+                    param.grad.div_(self.loss_scale)
 
     def after_step(self):
         #Zero the gradients of the model since the optimizer is disconnected.
@@ -420,9 +430,11 @@ cbfs = [partial(AvgStatsCallback,accuracy),
         partial(BatchTransformXCallback, norm_imagenette)]
 
 
+# With adam_opt as a function I couldn't call .opt() on in in fit, created adm_opt variable
 
 
-learn = get_learner(nfs, data, 1e-2, conv_layer, cb_funcs=cbfs, opt_func=adam_opt)
+
+learn = get_learner(nfs, data, 1e-2, conv_layer, cb_funcs=cbfs, opt_func=adm_opt)
 
 
 
