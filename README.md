@@ -24,5 +24,6 @@ dl2/
     /scripts
         exported .ipynb's as .py to use in ide for debugging/stepping to source in ide 
     /exp
-        at lesson 12 stage I found it too hard to keep traing changes so just exported all .py scripts in exp into one file and imported that file.
+        at lesson 12 stage I found it too hard to keep traing changes so just exported all .py scripts in exp into one file, 
+        ran black code formatter on it and imported that file (nb_formatted.py).
 </pre>
