@@ -4,6 +4,11 @@ Refactored Fast.ai Pt2 2019 with exported .py files all in a centralised locatio
  
 (I found it very difficult to follow the .ipynb's with chained exports and without being able to step to definition when required).
 
+At lesson 12 stage I found it too hard to keep tracking changes so just exported all .py scripts in exp into one file, then 
+ran black code formatter on it and imported that file (nb_formatted.py).
+
+ie for lesson 12 notebooks import exp.nb_formatted
+
 <pre>
 Workflow:
     Work through notebooks
@@ -24,6 +29,5 @@ dl2/
     /scripts
         exported .ipynb's as .py to use in ide for debugging/stepping to source in ide 
     /exp
-        at lesson 12 stage I found it too hard to keep traing changes so just exported all .py scripts in exp into one file, 
-        ran black code formatter on it and imported that file (nb_formatted.py).
+        
 </pre>

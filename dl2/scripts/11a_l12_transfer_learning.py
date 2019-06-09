@@ -1,16 +1,11 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
 
 
-get_ipython().run_line_magic('load_ext', 'autoreload')
-get_ipython().run_line_magic('autoreload', '2')
-
-get_ipython().run_line_magic('matplotlib', 'inline')
 
 
-# In[2]:
+
 
 
 #import os; os.environ['CUDA_VISIBLE_DEVICES']='0, 1 2'
@@ -20,7 +15,6 @@ import time
 from exp.nb_formatted import *
 
 
-# In[3]:
 
 
 #set to true on first run
@@ -31,13 +25,11 @@ RETRAIN=False
 
 # Store on ssd rather than in home folder
 
-# In[4]:
 
 
 path = datasets.untar_data(datasets.URLs.IMAGEWOOF_160, dest='data')
 
 
-# In[5]:
 
 
 size = 128
@@ -53,13 +45,11 @@ ll.valid.x.tfms = val_tfms
 data = ll.to_databunch(bs, c_in=3, c_out=10, num_workers=8)
 
 
-# In[6]:
 
 
 len(il)
 
 
-# In[7]:
 
 
 loss_func = LabelSmoothingCrossEntropy()
@@ -68,13 +58,11 @@ opt_func = adam_opt(mom=0.9, mom_sqr=0.99, eps=1e-6, wd=1e-2)
 
 # Using imagenette norm on imagewoof
 
-# In[8]:
 
 
 learn = cnn_learner(arch=xresnet18, data=data, loss_func=loss_func, opt_func=opt_func, norm=norm_imagenette)
 
 
-# In[9]:
 
 
 def sched_1cycle(lr, pct_start=0.3, mom_start=0.95, mom_mid=0.85, mom_end=0.95):
@@ -85,7 +73,6 @@ def sched_1cycle(lr, pct_start=0.3, mom_start=0.95, mom_mid=0.85, mom_end=0.95):
             ParamScheduler('mom', sched_mom)]
 
 
-# In[10]:
 
 
 lr = 3e-3
@@ -99,7 +86,6 @@ cbsched = sched_1cycle(lr, pct_start)
 # 
 # 2 x 2080ti, bs=512, epochs=10, elapsed: 79.39946436882019
 
-# In[11]:
 
 
 mdl_path = path/'models'
@@ -133,31 +119,26 @@ else:
 
 # ## Pets
 
-# In[12]:
 
 
 pets = datasets.untar_data(datasets.URLs.PETS, dest='data')
 
 
-# In[13]:
 
 
 pets.ls()
 
 
-# In[14]:
 
 
 pets_path = pets/'images'
 
 
-# In[15]:
 
 
 il = ImageList.from_files(pets_path, tfms=tfms)
 
 
-# In[16]:
 
 
 il
@@ -165,26 +146,22 @@ il
 
 # We dont have a sapratae validation directory so randomly grab val samples
 
-# In[17]:
 
 
 #export
 def random_splitter(fn, p_valid): return random.random() < p_valid
 
 
-# In[18]:
 
 
 random.seed(42)
 
 
-# In[19]:
 
 
 sd = SplitData.split_by_func(il, partial(random_splitter, p_valid=0.1))
 
 
-# In[20]:
 
 
 sd
@@ -192,19 +169,16 @@ sd
 
 # Now need to label - use filenames as cant use folders
 
-# In[21]:
 
 
 n = il.items[0].name; n
 
 
-# In[22]:
 
 
 re.findall(r'^(.*)_\d+.jpg$', n)[0]
 
 
-# In[23]:
 
 
 def pet_labeler(fn): 
@@ -213,49 +187,41 @@ def pet_labeler(fn):
 
 # Use CategoryProcessor from last week
 
-# In[24]:
 
 
 proc = CategoryProcessor()
 
 
-# In[25]:
 
 
 ll = label_by_func(sd, pet_labeler, proc_y=proc)
 
 
-# In[26]:
 
 
 ', '.join(proc.vocab)
 
 
-# In[27]:
 
 
 ll.valid.x.tfms = val_tfms
 
 
-# In[28]:
 
 
 c_out = len(proc.vocab)
 
 
-# In[29]:
 
 
 data = ll.to_databunch(bs, c_in=3, c_out=c_out, num_workers=8)
 
 
-# In[30]:
 
 
 learn = cnn_learner(xresnet18, data, loss_func, opt_func, norm=norm_imagenette)
 
 
-# In[31]:
 
 
 if RETRAIN:
@@ -277,104 +243,87 @@ if RETRAIN:
 # 
 # Also addpend Recorder callback to access loss
 
-# In[32]:
 
 
 learn = cnn_learner(xresnet18, data, loss_func, opt_func, c_out=10, norm=norm_imagenette, xtra_cb=Recorder)
 
 
-# In[33]:
 
 
 mdl_path
 
 
-# In[34]:
 
 
 st = torch.load(mdl_path/'iw5')
 
 
-# In[35]:
 
 
 st.keys()
 
 
-# In[36]:
 
 
 m = learn.model
 
 
-# In[37]:
 
 
 mst = m.state_dict()
 
 
-# In[38]:
 
 
 mst.keys()
 
 
-# In[39]:
 
 
 #check that keys are same in both dicts
 
 
-# In[40]:
 
 
 [k for k in st.keys() if k not in mst.keys()]
 
 
-# In[41]:
 
 
 m.load_state_dict(st)
 
 
-# In[42]:
 
 
 #want to remove last layer as have different ammount of categries - here 37 pet breeds. Find the AdaptiveAvgPool2d layer and use everything before this
 
 
-# In[43]:
 
 
 m
 
 
-# In[44]:
 
 
 cut = next(i for i,o in enumerate(m.children()) if isinstance(o,nn.AdaptiveAvgPool2d))
 m_cut = m[:cut]
 
 
-# In[45]:
 
 
 len(m_cut)
 
 
-# In[46]:
 
 
 xb,yb = get_batch(data.valid_dl, learn)
 
 
-# In[47]:
 
 
 pred = m_cut(xb)
 
 
-# In[48]:
 
 
 pred.shape
@@ -382,7 +331,6 @@ pred.shape
 
 # To find number of inputs, here we have 128 minibatch of input size 512, 4x4
 
-# In[49]:
 
 
 #number of inputs to our head
@@ -392,7 +340,6 @@ ni = pred.shape[1]
 # Note we use both Avg and Max pool and concatenate them together eg
 # https://www.cs.cmu.edu/~tzhi/publications/ICIP2016_two_stage.pdf
 
-# In[50]:
 
 
 #export
@@ -405,7 +352,6 @@ class AdaptiveConcatPool2d(nn.Module):
     def forward(self, x): return torch.cat([self.mp(x), self.ap(x)], 1)
 
 
-# In[51]:
 
 
 nh = 40
@@ -413,7 +359,6 @@ nh = 40
 
 # Allow hook to access internals of XResNet by unpacking arg list
 
-# In[52]:
 
 
 m_new = nn.Sequential(
@@ -421,7 +366,6 @@ m_new = nn.Sequential(
     nn.Linear(ni*2, data.c_out))
 
 
-# In[53]:
 
 
 #m_new = nn.Sequential(
@@ -429,7 +373,6 @@ m_new = nn.Sequential(
 #    nn.Linear(ni*2, data.c_out))
 
 
-# In[54]:
 
 
 learn.model = m_new
@@ -473,7 +416,6 @@ learn.model = m_new
 #         :attr:`max`. If :attr:`min` and :attr:`max` are both zero, the minimum and
 #         maximum values of the data are used.
 
-# In[55]:
 
 
 #this is run on each batch
@@ -495,7 +437,6 @@ def append_hist_stats(hook, mod, inp, outp):
         hists.append(outp.data.cpu().histc(40,-10,10)) #histc isn't implemented on the GPU
 
 
-# In[56]:
 
 
 def plot_hooks(hooks):
@@ -510,7 +451,6 @@ def plot_hooks(hooks):
     plt.legend(range(len(hooks)));
 
 
-# In[57]:
 
 
 def plot_deltas(deltas):
@@ -523,7 +463,6 @@ def plot_deltas(deltas):
     plt.show()
 
 
-# In[58]:
 
 
 #get the hist data at index 2
@@ -532,7 +471,6 @@ def get_hist(h):
     return torch.stack(h.stats[2]).t().float().log1p().cpu()
 
 
-# In[59]:
 
 
 def plot_hooks_hist(hooks):
@@ -547,7 +485,6 @@ def plot_hooks_hist(hooks):
     plt.tight_layout()
 
 
-# In[60]:
 
 
 def plot_hooks_hist_lines(hooks):
@@ -558,7 +495,6 @@ def plot_hooks_hist_lines(hooks):
         ax.axis('on')
 
 
-# In[61]:
 
 
 def get_start_mins(h):
@@ -566,7 +502,6 @@ def get_start_mins(h):
     return h1[:2].sum(0)/h1.sum(0)
 
 
-# In[62]:
 
 
 def get_mid_mins(h, max_hist):
@@ -575,7 +510,6 @@ def get_mid_mins(h, max_hist):
     return h1[int((max_hist/2)-1):int((max_hist/2)+2)].sum(0)/h1.sum(0)
 
 
-# In[63]:
 
 
 def plot_mins(hooks):
@@ -589,7 +523,6 @@ def plot_mins(hooks):
     plt.legend(['start'])
 
 
-# In[64]:
 
 
 def plot_mid_mins(hooks):
@@ -606,7 +539,6 @@ def plot_mid_mins(hooks):
     plt.legend(['mid'])
 
 
-# In[65]:
 
 
 def plot_ep_vals(ep_vals):
@@ -621,7 +553,6 @@ def plot_ep_vals(ep_vals):
     plt.legend(loc='upper left')
 
 
-# In[66]:
 
 
 for i,m in enumerate(learn.model):
@@ -630,7 +561,6 @@ for i,m in enumerate(learn.model):
 
 # ### Fit
 
-# In[67]:
 
 
 with Hooks(learn.model, append_hist_stats) as hooks_naive: 
@@ -646,7 +576,6 @@ with Hooks(learn.model, append_hist_stats) as hooks_naive:
 # 4 	1.465440 	0.747413 	1.599652 	0.690180 	00:07
 # </pre>
 
-# In[68]:
 
 
 plot_hooks(hooks_naive)
@@ -654,25 +583,21 @@ plot_hooks(hooks_naive)
 
 # #### Histograms
 
-# In[69]:
 
 
 hooks_naive
 
 
-# In[70]:
 
 
 plot_hooks_hist(hooks_naive)
 
 
-# In[71]:
 
 
 plot_mid_mins(hooks_naive)
 
 
-# In[72]:
 
 
 naive_hists=[]
@@ -689,13 +614,11 @@ naive_del_ss=np.diff(naive_ss)
 
 # Means change between each layer
 
-# In[73]:
 
 
 plot_deltas(naive_del_ms)
 
 
-# In[74]:
 
 
 plot_deltas(naive_del_ss)
@@ -703,7 +626,6 @@ plot_deltas(naive_del_ss)
 
 # Means change between first and last layer
 
-# In[75]:
 
 
 first_n_last = [naive_ms[0], naive_ms[-1]]
@@ -713,19 +635,16 @@ print(len(naive_del_fal))
 plot_deltas(naive_del_fal)
 
 
-# In[76]:
 
 
 learn.recorder.plot_loss()
 
 
-# In[77]:
 
 
 len(learn.recorder.losses)/len(learn.recorder.val_losses)
 
 
-# In[78]:
 
 
 #18.5 * more training data than validation data 
@@ -735,7 +654,6 @@ len(learn.recorder.losses)/len(learn.recorder.val_losses)
 
 # Lines above pasted into one cell to create a function (Shift-M)
 
-# In[79]:
 
 
 def adapt_model(learn, data):
@@ -752,20 +670,17 @@ def adapt_model(learn, data):
     learn.model = m_new
 
 
-# In[80]:
 
 
 learn = cnn_learner(xresnet18, data, loss_func, opt_func, c_out=10, norm=norm_imagenette, xtra_cb=Recorder)
 learn.model.load_state_dict(torch.load(mdl_path/'iw5'))
 
 
-# In[81]:
 
 
 adapt_model(learn, data)
 
 
-# In[82]:
 
 
 len(learn.model)
@@ -775,38 +690,32 @@ len(learn.model)
 
 # #### Freeze everything before head
 
-# In[83]:
 
 
 for p in learn.model[0].parameters(): p.requires_grad_(False)
 
 
-# In[84]:
 
 
 with Hooks(learn.model, append_hist_stats) as hooks_freeze: 
     learn.fit(3, sched_1cycle(1e-2, 0.5))
 
 
-# In[85]:
 
 
 plot_hooks(hooks_freeze)
 
 
-# In[86]:
 
 
 plot_hooks_hist(hooks_freeze)
 
 
-# In[87]:
 
 
 plot_mid_mins(hooks_naive)
 
 
-# In[88]:
 
 
 learn.recorder.plot_loss()
@@ -814,13 +723,11 @@ learn.recorder.plot_loss()
 
 # #### Unfreeze
 
-# In[89]:
 
 
 for p in learn.model[0].parameters(): p.requires_grad_(True)
 
 
-# In[90]:
 
 
 with Hooks(learn.model, append_hist_stats) as hooks_unfreeze: 
@@ -832,25 +739,21 @@ with Hooks(learn.model, append_hist_stats) as hooks_unfreeze:
 # 
 # What is really going on here? (1:26 in lesson video), and why do I get better results when JH got worse result?
 
-# In[91]:
 
 
 plot_hooks(hooks_unfreeze)
 
 
-# In[92]:
 
 
 plot_hooks_hist(hooks_unfreeze)
 
 
-# In[93]:
 
 
 plot_mid_mins(hooks_unfreeze)
 
 
-# In[94]:
 
 
 learn.recorder.plot_loss()
@@ -862,7 +765,6 @@ learn.recorder.plot_loss()
 
 # ## Batch norm transfer
 
-# In[95]:
 
 
 learn = cnn_learner(xresnet18, data, loss_func, opt_func, c_out=10, norm=norm_imagenette, xtra_cb=Recorder)
@@ -870,7 +772,6 @@ learn.model.load_state_dict(torch.load(mdl_path/'iw5'))
 adapt_model(learn, data)
 
 
-# In[96]:
 
 
 def apply_mod(m, f):
@@ -888,38 +789,32 @@ def set_grad(m, b):
 # 
 # Freeze just non batchnorm and last layer
 
-# In[97]:
 
 
 apply_mod(learn.model, partial(set_grad, b=False))
 
 
-# In[98]:
 
 
 with Hooks(learn.model, append_hist_stats) as hooks_freeze_non_bn: 
     learn.fit(3, sched_1cycle(1e-2, 0.5))
 
 
-# In[99]:
 
 
 plot_hooks(hooks_freeze_non_bn)
 
 
-# In[100]:
 
 
 plot_hooks_hist(hooks_freeze_non_bn)
 
 
-# In[101]:
 
 
 plot_mins(hooks_freeze_non_bn)
 
 
-# In[102]:
 
 
 learn.recorder.plot_loss()
@@ -927,38 +822,32 @@ learn.recorder.plot_loss()
 
 # #### Unfreeze
 
-# In[103]:
 
 
 apply_mod(learn.model, partial(set_grad, b=True))
 
 
-# In[104]:
 
 
 with Hooks(learn.model, append_hist_stats) as hooks_unfreeze_non_bn: 
     learn.fit(5, cbsched, reset_opt=True)
 
 
-# In[105]:
 
 
 plot_hooks(hooks_unfreeze_non_bn)
 
 
-# In[106]:
 
 
 plot_hooks_hist(hooks_unfreeze_non_bn)
 
 
-# In[107]:
 
 
 plot_mins(hooks_unfreeze_non_bn)
 
 
-# In[108]:
 
 
 learn.recorder.plot_loss()
@@ -966,7 +855,6 @@ learn.recorder.plot_loss()
 
 # Pytorch already has an `apply` method we can use:
 
-# In[109]:
 
 
 learn.model.apply(partial(set_grad, b=False));
@@ -976,7 +864,6 @@ learn.model.apply(partial(set_grad, b=False));
 
 # ## Non-Batch norm transfer
 
-# In[110]:
 
 
 learn = cnn_learner(xresnet18, data, loss_func, opt_func, c_out=10, norm=norm_imagenette, xtra_cb=Recorder)
@@ -984,7 +871,6 @@ learn.model.load_state_dict(torch.load(mdl_path/'iw5'))
 adapt_model(learn, data)
 
 
-# In[111]:
 
 
 def set_bn_grad(m, b):
@@ -998,38 +884,32 @@ def set_bn_grad(m, b):
 # 
 # Freeze just batchnorm and last layer
 
-# In[112]:
 
 
 apply_mod(learn.model, partial(set_bn_grad, b=False))
 
 
-# In[113]:
 
 
 with Hooks(learn.model, append_hist_stats) as hooks_freeze_bn: 
     learn.fit(3, sched_1cycle(1e-2, 0.5))
 
 
-# In[114]:
 
 
 plot_hooks(hooks_freeze_bn)
 
 
-# In[115]:
 
 
 plot_hooks_hist(hooks_freeze_bn)
 
 
-# In[116]:
 
 
 plot_mins(hooks_freeze_bn)
 
 
-# In[117]:
 
 
 learn.recorder.plot_loss()
@@ -1037,38 +917,32 @@ learn.recorder.plot_loss()
 
 # #### Unfreeze
 
-# In[118]:
 
 
 apply_mod(learn.model, partial(set_bn_grad, b=True))
 
 
-# In[119]:
 
 
 with Hooks(learn.model, append_hist_stats) as hooks_unfreeze_bn: 
     learn.fit(5, cbsched, reset_opt=True)
 
 
-# In[120]:
 
 
 plot_hooks(hooks_unfreeze_bn)
 
 
-# In[121]:
 
 
 plot_hooks_hist(hooks_unfreeze_bn)
 
 
-# In[122]:
 
 
 plot_mins(hooks_unfreeze_bn)
 
 
-# In[123]:
 
 
 learn.recorder.plot_loss()
@@ -1076,20 +950,17 @@ learn.recorder.plot_loss()
 
 # ## Discriminative LR and param groups
 
-# In[124]:
 
 
 learn = cnn_learner(xresnet18, data, loss_func, opt_func, c_out=10, norm=norm_imagenette)
 
 
-# In[125]:
 
 
 learn.model.load_state_dict(torch.load(mdl_path/'iw5'))
 adapt_model(learn, data)
 
 
-# In[126]:
 
 
 def bn_splitter(m):
@@ -1105,25 +976,21 @@ def bn_splitter(m):
     return g1,g2
 
 
-# In[127]:
 
 
 a,b = bn_splitter(learn.model)
 
 
-# In[128]:
 
 
 test_eq(len(a)+len(b), len(list(m.parameters())))
 
 
-# In[ ]:
 
 
 Learner.ALL_CBS
 
 
-# In[ ]:
 
 
 #export
@@ -1131,13 +998,11 @@ from types import SimpleNamespace
 cb_types = SimpleNamespace(**{o:o for o in Learner.ALL_CBS})
 
 
-# In[ ]:
 
 
 cb_types.after_backward
 
 
-# In[ ]:
 
 
 #export
@@ -1150,7 +1015,6 @@ class DebugCallback(Callback):
             else:      set_trace()
 
 
-# In[ ]:
 
 
 #export
@@ -1163,13 +1027,11 @@ def sched_1cycle(lrs, pct_start=0.3, mom_start=0.95, mom_mid=0.85, mom_end=0.95)
             ParamScheduler('mom', sched_mom)]
 
 
-# In[ ]:
 
 
 disc_lr_sched = sched_1cycle([0,3e-2], 0.5)
 
 
-# In[ ]:
 
 
 learn = cnn_learner(xresnet18, data, loss_func, opt_func,
@@ -1179,7 +1041,6 @@ learn.model.load_state_dict(torch.load(mdl_path/'iw5'))
 adapt_model(learn, data)
 
 
-# In[ ]:
 
 
 def _print_det(o): 
@@ -1189,19 +1050,16 @@ def _print_det(o):
 learn.fit(1, disc_lr_sched + [DebugCallback(cb_types.after_batch, _print_det)])
 
 
-# In[ ]:
 
 
 learn.fit(3, disc_lr_sched)
 
 
-# In[ ]:
 
 
 disc_lr_sched = sched_1cycle([1e-3,1e-2], 0.3)
 
 
-# In[ ]:
 
 
 learn.fit(5, disc_lr_sched)
@@ -1209,13 +1067,10 @@ learn.fit(5, disc_lr_sched)
 
 # ## Export
 
-# In[ ]:
 
 
-get_ipython().system('./notebook2script.py 11a_transfer_learning.ipynb')
 
 
-# In[ ]:
 
 
 
