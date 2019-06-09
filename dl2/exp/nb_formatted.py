@@ -2303,6 +2303,61 @@ class XResNet(nn.Sequential):
             ]
         )
 
+class XResNetStem(nn.Sequential):
+    #split XRestNet into 3 parts so can do telemetry on each part
+    @classmethod
+    def create(cls, expansion, layers, c_in=3, c_out=1000):
+        nfs = [c_in, (c_in + 1) * 8, 64, 64]
+        stem = [
+            conv_layer(nfs[i], nfs[i + 1], stride=2 if i == 0 else 1) for i in range(3)
+        ]
+
+        res = cls(
+            *stem,
+        )
+        init_cnn(res)
+        return res
+
+class XResNetRes(nn.Sequential):
+    @classmethod
+    def create(cls, expansion, layers):
+
+
+        nfs = [64 // expansion, 64, 128, 256, 512]
+        res_layers = [
+            cls._make_layer(
+                expansion, nfs[i], nfs[i + 1], n_blocks=l, stride=1 if i == 0 else 2
+            )
+            for i, l in enumerate(layers)
+        ]
+        res = cls(
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+            *res_layers,
+        )
+        init_cnn(res)
+        return res
+
+    @staticmethod
+    def _make_layer(expansion, ni, nf, n_blocks, stride):
+        return nn.Sequential(
+            *[
+                ResBlock(expansion, ni if i == 0 else nf, nf, stride if i == 0 else 1)
+                for i in range(n_blocks)
+            ]
+        )
+
+class XResNetAFL(nn.Sequential):
+    @classmethod
+    def create(cls, expansion, c_out=1000):
+
+        nfs = [64 // expansion, 64, 128, 256, 512]
+        res = cls(
+            nn.AdaptiveAvgPool2d(1),
+            Flatten(),
+            nn.Linear(nfs[-1] * expansion, c_out),
+        )
+        init_cnn(res)
+        return res
 
 def xresnet18(**kwargs):
     return XResNet.create(1, [2, 2, 2, 2], **kwargs)
@@ -2389,7 +2444,6 @@ def cnn_learner(
         cb_funcs=cbfs,
         **kwargs,
     )
-
 
 ######################### nb_11a.py
 
