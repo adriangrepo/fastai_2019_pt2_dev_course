@@ -8,7 +8,7 @@
 
 
 
-#import os; os.environ['CUDA_VISIBLE_DEVICES']='0, 1 2'
+import os; os.environ['CUDA_VISIBLE_DEVICES']='2'
 
 #export
 import time
@@ -434,12 +434,15 @@ def append_hist_stats(hook, mod, inp, outp):
         #outp.data shape is [64,512,4,4]
         means.append(outp.data.mean().cpu())
         stds .append(outp.data.std().cpu())
-        hists.append(outp.data.cpu().histc(40,-10,10)) #histc isn't implemented on the GPU
+        if isinstance(mod, nn.Linear):
+            hists.append(outp.data.cpu().histc(40,-10,10)) #no relu here
+        else:
+            hists.append(outp.data.cpu().histc(40,0,10)) #no negatives
 
 
 
 
-def plot_hooks(hooks):
+def plot_hooks(hooks, fig_name=None):
     fig,(ax0,ax1) = plt.subplots(1,2, figsize=(10,4))
     print(f'plotting {len(hooks)} layers')
     for h in hooks:
@@ -448,19 +451,33 @@ def plot_hooks(hooks):
         ax0.set_title('mean')
         ax1.plot(ss)
         ax1.set_title('std. dev.')
-    plt.legend(range(len(hooks)));
+    plt.legend(range(len(hooks)))
+    if fig_name:
+        pass
+    #plt.show()
 
 
 
 
-def plot_deltas(deltas):
+def smooth(y, box_pts):
+    box = np.ones(box_pts)/box_pts
+    y_smooth = np.convolve(y, box, mode='same')
+    return y_smooth
+
+
+
+
+def plot_deltas(deltas, smoother, fig_name=None):
     half_plots=int((len(deltas)/2) + (len(deltas)/2 % 1 > 0))
     fig,axes= plt.subplots(half_plots,2, figsize=(10,half_plots*2))
     for ax,h in zip(axes.flatten(), deltas):
+        h = smooth(h, smoother)
         ax.plot(h)
         ax.set_title('delta')
     plt.legend(range(len(deltas)))
-    plt.show()
+    if fig_name:
+        pass
+    #plt.show()
 
 
 
@@ -473,7 +490,7 @@ def get_hist(h):
 
 
 
-def plot_hooks_hist(hooks):
+def plot_hooks_hist(hooks, fig_name=None):
     #subplots(rows,colums)
     half_plots=int((len(hooks)/2) + (len(hooks)/2 % 1 > 0))
     fig,axes = plt.subplots(half_plots,2, figsize=(15,int(len(hooks)/2)*3))
@@ -483,16 +500,22 @@ def plot_hooks_hist(hooks):
         ax.set_aspect('auto')
         ax.axis('on')
     plt.tight_layout()
+    if fig_name:
+        pass
+    #plt.show()
 
 
 
 
-def plot_hooks_hist_lines(hooks):
+def plot_hooks_hist_lines(hooks, fig_name=None):
     half_plots=int((len(hooks)/2) + (len(hooks)/2 % 1 > 0))
     fig,axes = plt.subplots(half_plots,2, figsize=(15,int(len(hooks)/2)*5))
     for ax,h in zip(axes.flatten(), hooks):
         ax.plot(get_hist(h))
         ax.axis('on')
+    if fig_name:
+        pass
+    #plt.show()
 
 
 
@@ -533,7 +556,7 @@ def plot_mid_mins(hooks):
     print(max_hist)
     for ax,h in zip(axes.flatten(), hooks):
         ax.plot(get_mid_mins(h,max_hist))
-        ax.set_ylim(0,1)
+        ax.set_ylim(-1,1)
         ax.axis('on')
     plt.tight_layout()
     plt.legend(['mid'])
@@ -541,7 +564,7 @@ def plot_mid_mins(hooks):
 
 
 
-def plot_ep_vals(ep_vals):
+def plot_ep_vals(ep_vals, fig_name=None):
     plt.ylabel("loss")
     plt.xlabel("epoch")
     epochs = ep_vals.keys()
@@ -551,6 +574,9 @@ def plot_ep_vals(ep_vals):
     plt.plot(epochs, trn_losses, c='b', label='train')
     plt.plot(epochs, val_losses, c='r', label='validation')
     plt.legend(loc='upper left')
+    if fig_name:
+        pass
+    #plt.show()
 
 
 
@@ -564,7 +590,8 @@ for i,m in enumerate(learn.model):
 
 
 with Hooks(learn.model, append_hist_stats) as hooks_naive: 
-    learn.fit(5, cbsched)
+    learn.fit(1, cbsched)
+
 
 
 # <pre>
@@ -578,7 +605,7 @@ with Hooks(learn.model, append_hist_stats) as hooks_naive:
 
 
 
-plot_hooks(hooks_naive)
+plot_hooks(hooks_naive,fig_name='naive_stats.png')
 
 
 # #### Histograms
@@ -590,49 +617,56 @@ hooks_naive
 
 
 
-plot_hooks_hist(hooks_naive)
+plot_hooks_hist(hooks_naive,fig_name='naive_hists.png')
 
 
 
 
-plot_mid_mins(hooks_naive)
+#plot_mid_mins(hooks_naive)
 
 
 
 
-naive_hists=[]
-naive_ms=[]
-naive_ss=[]
-for h in hooks_naive:
-    naive_hists.append(get_hist(h))
-    ms,ss, hists = h.stats
-    naive_ms.append(ms)
-    naive_ss.append(ss)
-naive_del_ms=np.diff(naive_ms)
-naive_del_ss=np.diff(naive_ss)
+def diff_stats(hooks_data):
+    histsl=[]
+    msl=[]
+    ssl=[]
+    for h in hooks_data:
+        histsl.append(get_hist(h))
+        ms,ss, hists = h.stats
+        msl.append(ms)
+        ssl.append(ss)
+    del_ms=np.diff(msl)
+    del_ss=np.diff(ssl)
+    return del_ms,del_ss
+
+
+
+
+naive_del_ms,naive_del_ss=diff_stats(hooks_naive)
 
 
 # Means change between each layer
 
 
 
-plot_deltas(naive_del_ms)
+plot_deltas(naive_del_ms, 50,fig_name='naive_del_ms.png')
 
 
 
 
-plot_deltas(naive_del_ss)
+plot_deltas(naive_del_ss, 50,fig_name='naive_del_sds.png')
 
 
 # Means change between first and last layer
 
 
 
-first_n_last = [naive_ms[0], naive_ms[-1]]
+first_n_last = [naive_del_ms[0], naive_del_ms[-1]]
 print(len(first_n_last))
 naive_del_fal=np.diff(first_n_last)
 print(len(naive_del_fal))
-plot_deltas(naive_del_fal)
+plot_deltas(naive_del_fal, 50)
 
 
 
@@ -692,28 +726,46 @@ len(learn.model)
 
 
 
-for p in learn.model[0].parameters(): p.requires_grad_(False)
+#everything before AdaptiveConcatPool2d 
+for i in range(8):
+    for p in learn.model[0].parameters(): p.requires_grad_(False)
 
 
 
 
 with Hooks(learn.model, append_hist_stats) as hooks_freeze: 
-    learn.fit(3, sched_1cycle(1e-2, 0.5))
+    learn.fit(1, sched_1cycle(1e-2, 0.5))
 
 
 
 
-plot_hooks(hooks_freeze)
+
+plot_hooks(hooks_freeze,fig_name='freeze_layer_stats.png')
 
 
 
 
-plot_hooks_hist(hooks_freeze)
+plot_hooks_hist(hooks_freeze,fig_name='freeze_hists.png')
 
 
 
 
-plot_mid_mins(hooks_naive)
+#plot_mid_mins(hooks_freeze)
+
+
+
+
+frozen_del_ms,frozen_del_ss=diff_stats(hooks_freeze)
+
+
+
+
+plot_deltas(frozen_del_ms, 50,fig_name='freeze_del_ms.png')
+
+
+
+
+plot_deltas(frozen_del_ss, 50,fig_name='freeze_del_sds.png')
 
 
 
@@ -725,33 +777,51 @@ learn.recorder.plot_loss()
 
 
 
-for p in learn.model[0].parameters(): p.requires_grad_(True)
+#everything before AdaptiveConcatPool2d - note difference to lesson nb where just have layer 0
+for i in range(8):
+    for p in learn.model[i].parameters(): p.requires_grad_(True)
 
 
 
 
 with Hooks(learn.model, append_hist_stats) as hooks_unfreeze: 
-    learn.fit(5, cbsched, reset_opt=True)
+    learn.fit(1, cbsched, reset_opt=True)
 
 
-# With freeze then unfreeze I'm getting slightly better than naive training.
+
+# 
 # In frozen layer - train for particuar mean and std dev, but pets has different std dev and means inside the model.
 # 
 # What is really going on here? (1:26 in lesson video), and why do I get better results when JH got worse result?
 
 
 
-plot_hooks(hooks_unfreeze)
+plot_hooks(hooks_unfreeze,fig_name='unfreeze_layer_stats.png')
 
 
 
 
-plot_hooks_hist(hooks_unfreeze)
+plot_hooks_hist(hooks_unfreeze,fig_name='unfreeze_hists.png')
 
 
 
 
-plot_mid_mins(hooks_unfreeze)
+#plot_mid_mins(hooks_unfreeze)
+
+
+
+
+unfrozen_del_ms,unfrozen_del_ss=diff_stats(hooks_unfreeze)
+
+
+
+
+plot_deltas(unfrozen_del_ms, 50,fig_name='unfreeze_del_ms.png')
+
+
+
+
+plot_deltas(unfrozen_del_ss, 50,fig_name='unfreeze_del_sds.png')
 
 
 
@@ -764,6 +834,8 @@ learn.recorder.plot_loss()
 # 1:27 in lesson 12
 
 # ## Batch norm transfer
+
+# Freeze all params that are not in the batchnorm layer or linear layer at end
 
 
 
@@ -779,7 +851,7 @@ def apply_mod(m, f):
     for l in m.children(): apply_mod(l, f)
 
 def set_grad(m, b):
-    #if linear layr at end of batchnorm layer in middle, dont change the gradient
+    #if linear layer (at end) or batchnorm layer in middle, dont change the gradient
     if isinstance(m, (nn.Linear,nn.BatchNorm2d)): return
     if hasattr(m, 'weight'):
         for p in m.parameters(): p.requires_grad_(b)
@@ -845,7 +917,7 @@ plot_hooks_hist(hooks_unfreeze_non_bn)
 
 
 
-plot_mins(hooks_unfreeze_non_bn)
+#plot_mins(hooks_unfreeze_non_bn)
 
 
 
@@ -907,7 +979,7 @@ plot_hooks_hist(hooks_freeze_bn)
 
 
 
-plot_mins(hooks_freeze_bn)
+#plot_mins(hooks_freeze_bn)
 
 
 
@@ -940,7 +1012,7 @@ plot_hooks_hist(hooks_unfreeze_bn)
 
 
 
-plot_mins(hooks_unfreeze_bn)
+#plot_mins(hooks_unfreeze_bn)
 
 
 
