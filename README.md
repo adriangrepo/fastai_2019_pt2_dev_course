@@ -9,6 +9,7 @@ ran black code formatter on it and imported that file (nb_formatted.py).
 
 ie for lesson 12 notebooks import exp.nb_formatted
 
+
 <pre>
 Workflow:
     Work through notebooks
