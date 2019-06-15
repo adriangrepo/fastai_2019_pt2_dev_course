@@ -8,7 +8,8 @@
 
 
 
-import os; os.environ['CUDA_VISIBLE_DEVICES']='2'
+import os 
+os.environ['CUDA_VISIBLE_DEVICES']='0'
 
 #export
 import time
@@ -316,6 +317,21 @@ len(m_cut)
 
 
 
+def module_grandchildren(model):
+    grandkids=[]
+    for m in m_cut.children():
+        for g in m.children():
+            grandkids.append(g)
+    return grandkids
+
+
+
+
+m_gc = module_grandchildren(m_cut)
+
+
+
+
 xb,yb = get_batch(data.valid_dl, learn)
 
 
@@ -363,6 +379,13 @@ nh = 40
 
 m_new = nn.Sequential(
     *m_cut.children(), AdaptiveConcatPool2d(), Flatten(),
+    nn.Linear(ni*2, data.c_out))
+
+
+
+
+m_new = nn.Sequential(
+    *m_gc.children(), AdaptiveConcatPool2d(), Flatten(),
     nn.Linear(ni*2, data.c_out))
 
 
@@ -453,8 +476,8 @@ def plot_hooks(hooks, fig_name=None):
         ax1.set_title('std. dev.')
     plt.legend(range(len(hooks)))
     if fig_name:
-        pass
-    #plt.show()
+        plt.savefig(fig_name)
+    plt.show()
 
 
 
@@ -476,8 +499,8 @@ def plot_deltas(deltas, smoother, fig_name=None):
         ax.set_title('delta')
     plt.legend(range(len(deltas)))
     if fig_name:
-        pass
-    #plt.show()
+        plt.savefig(fig_name)
+    plt.show()
 
 
 
@@ -501,8 +524,8 @@ def plot_hooks_hist(hooks, fig_name=None):
         ax.axis('on')
     plt.tight_layout()
     if fig_name:
-        pass
-    #plt.show()
+        plt.savefig(fig_name)
+    plt.show()
 
 
 
@@ -514,8 +537,8 @@ def plot_hooks_hist_lines(hooks, fig_name=None):
         ax.plot(get_hist(h))
         ax.axis('on')
     if fig_name:
-        pass
-    #plt.show()
+        plt.savefig(fig_name)
+    plt.show()
 
 
 
@@ -575,8 +598,8 @@ def plot_ep_vals(ep_vals, fig_name=None):
     plt.plot(epochs, val_losses, c='r', label='validation')
     plt.legend(loc='upper left')
     if fig_name:
-        pass
-    #plt.show()
+        plt.savefig(fig_name)
+    plt.show()
 
 
 
@@ -590,8 +613,7 @@ for i,m in enumerate(learn.model):
 
 
 with Hooks(learn.model, append_hist_stats) as hooks_naive: 
-    learn.fit(1, cbsched)
-
+    learn.fit(5, cbsched)
 
 
 # <pre>
@@ -706,13 +728,50 @@ def adapt_model(learn, data):
 
 
 
+def adapt_deep_model(learn, data):
+    cut = next(i for i,o in enumerate(learn.model.children())
+               if isinstance(o,nn.AdaptiveAvgPool2d))
+    m_cut = learn.model[:cut]
+    m_gc = module_grandchildren(m_cut)
+    xb,yb = get_batch(data.valid_dl, learn)
+    pred = m_cut(xb)
+    ni = pred.shape[1]
+    m_new = nn.Sequential(
+        #replace m_cut with grandchildren to get data for each layer in XResNet
+        *m_gc, AdaptiveConcatPool2d(), Flatten(),
+        nn.Linear(ni*2, data.c_out))
+    learn.model = m_new
+
+
+
+
+def adapt_simple_model(learn, data):
+    cut = next(i for i,o in enumerate(learn.model.children())
+               if isinstance(o,nn.AdaptiveAvgPool2d))
+    m_cut = learn.model[:cut]
+    xb,yb = get_batch(data.valid_dl, learn)
+    pred = m_cut(xb)
+    ni = pred.shape[1]
+    m_new = nn.Sequential(
+        m_cut, AdaptiveConcatPool2d(), Flatten(),
+        nn.Linear(ni*2, data.c_out))
+    learn.model = m_new
+
+
+
+
 learn = cnn_learner(xresnet18, data, loss_func, opt_func, c_out=10, norm=norm_imagenette, xtra_cb=Recorder)
 learn.model.load_state_dict(torch.load(mdl_path/'iw5'))
 
 
 
 
-adapt_model(learn, data)
+adapt_deep_model(learn, data)
+
+
+
+
+basic model as per lesson len: 4, with children len: 11, with grandchildren len: 20
 
 
 
@@ -727,15 +786,14 @@ len(learn.model)
 
 
 #everything before AdaptiveConcatPool2d 
-for i in range(8):
+for i in range(len(learn.model)-3):
     for p in learn.model[0].parameters(): p.requires_grad_(False)
 
 
 
 
 with Hooks(learn.model, append_hist_stats) as hooks_freeze: 
-    learn.fit(1, sched_1cycle(1e-2, 0.5))
-
+    learn.fit(3, sched_1cycle(1e-2, 0.5))
 
 
 
@@ -785,8 +843,7 @@ for i in range(8):
 
 
 with Hooks(learn.model, append_hist_stats) as hooks_unfreeze: 
-    learn.fit(1, cbsched, reset_opt=True)
-
+    learn.fit(5, cbsched, reset_opt=True)
 
 
 # 
@@ -852,6 +909,7 @@ def apply_mod(m, f):
 
 def set_grad(m, b):
     #if linear layer (at end) or batchnorm layer in middle, dont change the gradient
+    print(type(m))
     if isinstance(m, (nn.Linear,nn.BatchNorm2d)): return
     if hasattr(m, 'weight'):
         for p in m.parameters(): p.requires_grad_(b)
@@ -859,7 +917,7 @@ def set_grad(m, b):
 
 # #### Freeze and fit
 # 
-# Freeze just non batchnorm and last layer
+# Freeze just non batchnorm and last layer, note using apply_mod we traverse children layers so can access Batchnorm layers inside sequential
 
 
 
@@ -874,17 +932,32 @@ with Hooks(learn.model, append_hist_stats) as hooks_freeze_non_bn:
 
 
 
-plot_hooks(hooks_freeze_non_bn)
+plot_hooks(hooks_freeze_non_bn,fig_name='freeze_non_bn_layers.png')
 
 
 
 
-plot_hooks_hist(hooks_freeze_non_bn)
+plot_hooks_hist(hooks_freeze_non_bn,fig_name='freeze_non_bn_hist.png')
 
 
 
 
-plot_mins(hooks_freeze_non_bn)
+#plot_mins(hooks_freeze_non_bn)
+
+
+
+
+freeze_non_bn_del_ms,freeze_non_bn_del_sds=diff_stats(hooks_freeze_non_bn)
+
+
+
+
+plot_deltas(freeze_non_bn_del_ms, 50,fig_name='freeze_non_bn_del_ms.png')
+
+
+
+
+plot_deltas(freeze_non_bn_del_sds, 50,fig_name='freeze_non_bn_del_sds.png')
 
 
 
@@ -907,17 +980,32 @@ with Hooks(learn.model, append_hist_stats) as hooks_unfreeze_non_bn:
 
 
 
-plot_hooks(hooks_unfreeze_non_bn)
+plot_hooks(hooks_unfreeze_non_bn,fig_name='unfreeze_non_bn_layers.png')
 
 
 
 
-plot_hooks_hist(hooks_unfreeze_non_bn)
+plot_hooks_hist(hooks_unfreeze_non_bn,fig_name='unfreeze_non_bn_hist.png')
 
 
 
 
 #plot_mins(hooks_unfreeze_non_bn)
+
+
+
+
+unfreeze_non_bn_del_ms,unfreeze_non_bn_del_sds=diff_stats(hooks_unfreeze_non_bn)
+
+
+
+
+plot_deltas(unfreeze_non_bn_del_ms, 50,fig_name='unfreeze_non_bn_del_ms.png')
+
+
+
+
+plot_deltas(unfreeze_non_bn_del_sds, 50,fig_name='unfreeze_non_bn_del_sds.png')
 
 
 
@@ -934,92 +1022,6 @@ learn.model.apply(partial(set_grad, b=False));
 
 # Lesson 12 video: 1:29
 
-# ## Non-Batch norm transfer
-
-
-
-learn = cnn_learner(xresnet18, data, loss_func, opt_func, c_out=10, norm=norm_imagenette, xtra_cb=Recorder)
-learn.model.load_state_dict(torch.load(mdl_path/'iw5'))
-adapt_model(learn, data)
-
-
-
-
-def set_bn_grad(m, b):
-    #if linear layr at end of batchnorm layer in middle, dont change the gradient
-    if not isinstance(m, (nn.Linear,nn.BatchNorm2d)): return
-    if hasattr(m, 'weight'):
-        for p in m.parameters(): p.requires_grad_(b)
-
-
-# #### Freeze and fit
-# 
-# Freeze just batchnorm and last layer
-
-
-
-apply_mod(learn.model, partial(set_bn_grad, b=False))
-
-
-
-
-with Hooks(learn.model, append_hist_stats) as hooks_freeze_bn: 
-    learn.fit(3, sched_1cycle(1e-2, 0.5))
-
-
-
-
-plot_hooks(hooks_freeze_bn)
-
-
-
-
-plot_hooks_hist(hooks_freeze_bn)
-
-
-
-
-#plot_mins(hooks_freeze_bn)
-
-
-
-
-learn.recorder.plot_loss()
-
-
-# #### Unfreeze
-
-
-
-apply_mod(learn.model, partial(set_bn_grad, b=True))
-
-
-
-
-with Hooks(learn.model, append_hist_stats) as hooks_unfreeze_bn: 
-    learn.fit(5, cbsched, reset_opt=True)
-
-
-
-
-plot_hooks(hooks_unfreeze_bn)
-
-
-
-
-plot_hooks_hist(hooks_unfreeze_bn)
-
-
-
-
-#plot_mins(hooks_unfreeze_bn)
-
-
-
-
-learn.recorder.plot_loss()
-
-
 # ## Discriminative LR and param groups
 
 
@@ -1030,16 +1032,33 @@ learn = cnn_learner(xresnet18, data, loss_func, opt_func, c_out=10, norm=norm_im
 
 
 learn.model.load_state_dict(torch.load(mdl_path/'iw5'))
-adapt_model(learn, data)
+
+
+
+
+len(learn.model)
+
+
+
+
+adapt_simple_model(learn, data)
+
+
+
+
+len(learn.model)
 
 
 
 
 def bn_splitter(m):
     def _bn_splitter(l, g1, g2):
-        if isinstance(l, nn.BatchNorm2d): g2 += l.parameters()
-        elif hasattr(l, 'weight'): g1 += l.parameters()
-        for ll in l.children(): _bn_splitter(ll, g1, g2)
+        if isinstance(l, nn.BatchNorm2d): 
+            g2 += l.parameters()
+        elif hasattr(l, 'weight'): 
+            g1 += l.parameters()
+        for ll in l.children(): 
+            _bn_splitter(ll, g1, g2)
         
     g1,g2 = [],[]
     _bn_splitter(m[0], g1, g2)
@@ -1050,7 +1069,22 @@ def bn_splitter(m):
 
 
 
-a,b = bn_splitter(learn.model)
+m = learn.model
+
+
+
+
+a,b = bn_splitter(m)
+
+
+
+
+len(a)
+
+
+
+
+len(list(m.parameters()))
 
 
 
@@ -1141,6 +1175,7 @@ learn.fit(5, disc_lr_sched)
 
 
 
+#!./notebook2script.py 11a_transfer_learning.ipynb
 
 
 
