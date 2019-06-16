@@ -94,8 +94,9 @@ from torch.utils.data import DataLoader, SequentialSampler, RandomSampler
 
 
 def get_dls(train_ds, valid_ds, bs, **kwargs):
+    #NB shuffle=True removed, need to manually add to kwargs if want shuffle
     return (
-        DataLoader(train_ds, batch_size=bs, shuffle=True, **kwargs),
+        DataLoader(train_ds, batch_size=bs, **kwargs),
         DataLoader(valid_ds, batch_size=bs * 2, **kwargs),
     )
 
