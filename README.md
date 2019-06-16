@@ -2,7 +2,7 @@
 
 Refactored Fast.ai Pt2 2019 with exported .py files all in a centralised location, exported all notebooks as scripts so that source code goto definition can be used in an IDE.
  
-(I found it very difficult to follow the .ipynb's with chained exports and without being able to step to definition when required).
+(I found it super helpful to step through the code in a debugger).
 
 At lesson 12 stage I found it too hard to keep tracking changes so just exported all .py scripts in exp into one file, then 
 ran black code formatter on it and imported that file (nb_formatted.py).
