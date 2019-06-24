@@ -383,7 +383,7 @@ def combine_scheds(pcts, scheds):
 
 class Recorder(Callback):
     def begin_fit(self):
-        print('>>Recorder.begin_fit()')
+        print('>>386 Recorder.begin_fit()')
         self.lrs = [[] for _ in self.opt.param_groups]
         self.losses = []
         self.val_losses = []
@@ -399,10 +399,12 @@ class Recorder(Callback):
     def plot_lr(self, pgid=-1):
         plt.plot(self.lrs[pgid])
 
-    def plot_loss(self, skip_last=0):
+    def plot_loss(self, skip_last=0, save_path=''):
         plt.plot(self.losses[: len(self.losses) - skip_last], color='b', label="train")
         plt.plot(self.val_losses[: len(self.val_losses) - skip_last], color='r', label="valid")
         plt.legend()
+        if len(save_path)>0:
+            plt.savefig(save_path)
 
 
 class ParamScheduler(Callback):
@@ -452,6 +454,7 @@ class Callback:
 
     def __call__(self, cb_name):
         f = getattr(self, cb_name, None)
+        #here is where we call the callback
         if f and f():
             return True
         return False
@@ -597,6 +600,7 @@ class AvgStatsCallback(Callback):
 
 class Recorder(Callback):
     def begin_fit(self):
+        print('>>601 Recorder.begin_fit()')
         self.lrs = [[] for _ in self.opt.param_groups]
         self.losses = []
 
@@ -610,8 +614,10 @@ class Recorder(Callback):
     def plot_lr(self, pgid=-1):
         plt.plot(self.lrs[pgid])
 
-    def plot_loss(self, skip_last=0):
+    def plot_loss(self, skip_last=0,save_path=''):
         plt.plot(self.losses[: len(self.losses) - skip_last])
+        if len(save_path)>0:
+            plt.savefig(save_path)
 
     def plot(self, skip_last=0, pgid=-1):
         losses = [o.item() for o in self.losses]
@@ -810,6 +816,7 @@ def get_cnn_layers(data, nfs, layer, **kwargs):
 
 
 def conv_layer(ni, nf, ks=3, stride=2, **kwargs):
+    print('819 conv_layer()')
     return nn.Sequential(
         nn.Conv2d(ni, nf, ks, padding=ks // 2, stride=stride), GeneralRelu(**kwargs)
     )
@@ -892,8 +899,17 @@ def get_learn_run(
     init_cnn(model, uniform=uniform)
     return get_runner(model, data, lr=lr, cbs=cbs, opt_func=opt_func)
 
-
 def conv_layer(ni, nf, ks=3, stride=2, bn=True, **kwargs):
+    print('902 conv_layer()')
+    layers = [
+        nn.Conv2d(ni, nf, ks, padding=ks // 2, stride=stride, bias=not bn),
+        GeneralRelu(**kwargs),
+    ]
+    if bn:
+        layers.append(nn.BatchNorm2d(nf, eps=1e-5, momentum=0.1))
+    return nn.Sequential(*layers)
+
+def nbnconv_layer(ni, nf, ks=3, stride=2, bn=False, **kwargs):
     layers = [
         nn.Conv2d(ni, nf, ks, padding=ks // 2, stride=stride, bias=not bn),
         GeneralRelu(**kwargs),
@@ -1330,6 +1346,7 @@ def sgd_step(p, lr, **kwargs):
 class Recorder(Callback):
     #second veraion of recorder, here modifies to add validation losses
     def begin_fit(self):
+        print('>>1335 Recorder.begin_fit()')
         self.lrs, self.losses, self.val_losses = [], [], []
 
     def after_batch(self):
@@ -1342,7 +1359,7 @@ class Recorder(Callback):
     def plot_lr(self):
         plt.plot(self.lrs)
 
-    def plot_loss(self):
+    def plot_loss(self, save_path=''):
         fig = plt.figure()
         ax1 = fig.add_subplot(111)
         ax1.plot(self.losses)
@@ -1352,6 +1369,8 @@ class Recorder(Callback):
         ax2.plot(self.val_losses, 'r-')
         for tl in ax2.get_xticklabels():
             tl.set_color('r')
+        if len(save_path)> 0:
+            plt.savefig(save_path)
 
     def plot(self, skip_last=0):
         losses = [o.item() for o in self.losses]
@@ -1613,6 +1632,7 @@ class Learner:
             self.cbs.remove(cb)
 
     def one_batch(self, i, xb, yb):
+        #call model on a batch
         try:
             self.iter = i
             self.xb, self.yb = xb, yb
@@ -1737,6 +1757,48 @@ def get_learner(
     init_cnn(model)
     return Learner(model, data, loss_func, lr=lr, cb_funcs=cb_funcs, opt_func=opt_func)
 
+
+'''
+#### Additional callback not in lesson
+class AccumulateScheduler(LearnerCallback):
+    "Does accumlated step every nth step by accumulating gradients"
+
+    def __init__(self, learn: Learner, n_step: int = 1, drop_last: bool = False):
+        super().__init__(learn)
+        self.n_step, self.drop_last = n_step, drop_last
+
+    def on_train_begin(self, **kwargs):
+        "check if loss is reduction"
+        if hasattr(self.loss_func, "reduction") and (self.loss_func.reduction != "sum"):
+            warn("For better gradients consider 'reduction=sum'")
+
+    def on_epoch_begin(self, **kwargs):
+        "init samples and batches, change optimizer"
+        self.acc_samples, self.acc_batches = 0., 0.
+
+    def on_batch_begin(self, last_input, last_target, **kwargs):
+        "accumulate samples and batches"
+        self.acc_samples += last_input.shape[0]
+        self.acc_batches += 1
+
+    def on_backward_end(self, **kwargs):
+        "accumulated step and reset samples, True will result in no stepping"
+        if (self.acc_batches % self.n_step) == 0:
+            for p in (self.learn.model.parameters()):
+                if p.requires_grad: p.grad.div_(self.acc_samples)
+            self.acc_samples = 0
+        else:
+            return {'skip_step': True, 'skip_zero': True}
+
+    def on_epoch_end(self, **kwargs):
+        "step the rest of the accumulated grads if not perfectly divisible"
+        for p in (self.learn.model.parameters()):
+            if p.requires_grad: p.grad.div_(self.acc_samples)
+        if not self.drop_last: self.learn.opt.step()
+
+
+    self.learn.opt.zero_grad()
+'''
 
 ######################### nb_09c.py
 
@@ -2238,14 +2300,41 @@ def init_cnn(m):
     for l in m.children():
         init_cnn(l)
 
-
 def conv_layer(ni, nf, ks=3, stride=1, zero_bn=False, act=True):
+    print('2301 conv_layer()')
     bn = nn.BatchNorm2d(nf)
     nn.init.constant_(bn.weight, 0.0 if zero_bn else 1.0)
     layers = [conv(ni, nf, ks, stride=stride), bn]
     if act:
         layers.append(act_fn)
     return nn.Sequential(*layers)
+
+def nbnconv_layer(ni, nf, ks=3, stride=1, act=True):
+    #no batch norm
+    layers = [conv(ni, nf, ks, stride=stride)]
+    if act:
+        layers.append(act_fn)
+    return nn.Sequential(*layers)
+
+class NBNResBlock(nn.Module):
+    def __init__(self, expansion, ni, nh, stride=1):
+        super().__init__()
+        nf, ni = nh * expansion, ni * expansion
+        layers = [nbnconv_layer(ni, nh, 1)]
+        layers += (
+            [nbnconv_layer(nh, nf, 3, stride=stride, act=False)]
+            if expansion == 1
+            else [
+                nbnconv_layer(nh, nh, 3, stride=stride),
+                nbnconv_layer(nh, nf, 1, act=False),
+            ]
+        )
+        self.convs = nn.Sequential(*layers)
+        self.idconv = noop if ni == nf else nbnconv_layer(ni, nf, 1, act=False)
+        self.pool = noop if stride == 1 else nn.AvgPool2d(2, ceil_mode=True)
+
+    def forward(self, x):
+        return act_fn(self.convs(x) + self.idconv(self.pool(x)))
 
 
 class ResBlock(nn.Module):
@@ -2267,6 +2356,41 @@ class ResBlock(nn.Module):
 
     def forward(self, x):
         return act_fn(self.convs(x) + self.idconv(self.pool(x)))
+
+class NBNResNet(nn.Sequential):
+    @classmethod
+    def create(cls, expansion, layers, c_in=3, c_out=1000):
+        nfs = [c_in, (c_in + 1) * 8, 64, 64]
+        stem = [
+            nbnconv_layer(nfs[i], nfs[i + 1], stride=2 if i == 0 else 1) for i in range(3)
+        ]
+
+        nfs = [64 // expansion, 64, 128, 256, 512]
+        res_layers = [
+            cls._make_layer(
+                expansion, nfs[i], nfs[i + 1], n_blocks=l, stride=1 if i == 0 else 2
+            )
+            for i, l in enumerate(layers)
+        ]
+        res = cls(
+            *stem,
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+            *res_layers,
+            nn.AdaptiveAvgPool2d(1),
+            Flatten(),
+            nn.Linear(nfs[-1] * expansion, c_out),
+        )
+        init_cnn(res)
+        return res
+
+    @staticmethod
+    def _make_layer(expansion, ni, nf, n_blocks, stride):
+        return nn.Sequential(
+            *[
+                NBNResBlock(expansion, ni if i == 0 else nf, nf, stride if i == 0 else 1)
+                for i in range(n_blocks)
+            ]
+        )
 
 
 class XResNet(nn.Sequential):
@@ -2359,6 +2483,9 @@ class XResNetAFL(nn.Sequential):
         )
         init_cnn(res)
         return res
+
+def nbnresnet18(**kwargs):
+    return NBNResNet.create(1, [2, 2, 2, 2], **kwargs)
 
 def xresnet18(**kwargs):
     return XResNet.create(1, [2, 2, 2, 2], **kwargs)

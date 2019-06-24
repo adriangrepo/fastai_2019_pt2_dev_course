@@ -24,6 +24,7 @@ from itertools import chain
 import time
 #pip3 install psutil
 import psutil
+
 from exp.nb_formatted import *
 
 
@@ -50,6 +51,12 @@ ipython_vars = ['In', 'Out', 'exit', 'quit', 'get_ipython', 'ipython_vars']
 RETRAIN=False
 #max mem use for weights in GB in RAM:
 MAX_MEM=40
+#compress layer weights down to this size for visualisation
+REBIN_SHAPE=(64,64)
+#save very compressed weights for plots
+SAVE_COMPRESSED_WTS=True
+#
+GRAD_SCALAR=42
 
 
 
@@ -63,7 +70,7 @@ print('memory use:', memoryUse)
 
 
 #base, shallow, deep
-HOOK_DEPTH = 'shallow'
+HOOK_DEPTH = 'base'
 CURRENT_DATE = datetime.datetime.today().strftime('%Y%m%d')
 UID=str(uuid.uuid4())[:8]
 NAME=HOOK_DEPTH+'_'+CURRENT_DATE+'_'+UID+'_'+GPUID
@@ -89,6 +96,11 @@ IMG_PATH=os.path.abspath(cwd + "/images/")
 
 
 IMG_PATH
+
+
+
+
+torch.cuda.empty_cache()
 
 
 # ## Serializing the model
@@ -166,7 +178,8 @@ mdl_path.mkdir(exist_ok=True)
 
 #absolute path
 HOOK_PATH=mdl_path/NAME
-HOOK_PATH.mkdir(exist_ok=True)
+if SAVE_COMPRESSED_WTS:
+    HOOK_PATH.mkdir(exist_ok=True)
 
 
 
@@ -321,141 +334,6 @@ if RETRAIN:
 # 4 	2.544567 	0.360582 	2.638438 	0.355463 	00:07
 # </pre>
 
-# ## Custom head
-
-# Poor result above, here we read in imagewoof model and customise for pets. Create 10 activations at end.
-# 
-# Also addpend Recorder callback to access loss
-
-
-
-learn = cnn_learner(xresnet18, data, loss_func, opt_func, c_out=10, norm=norm_imagenette, xtra_cb=Recorder)
-
-
-
-
-mdl_path
-
-
-
-
-st = torch.load(mdl_path/'iw5')
-
-
-
-
-st.keys()
-
-
-
-
-m = learn.model
-
-
-
-
-mst = m.state_dict()
-
-
-
-
-mst.keys()
-
-
-
-
-#check that keys are same in both dicts
-
-
-
-
-[k for k in st.keys() if k not in mst.keys()]
-
-
-
-
-m.load_state_dict(st)
-
-
-
-
-#want to remove last layer as have different ammount of categries - here 37 pet breeds. Find the AdaptiveAvgPool2d layer and use everything before this
-
-
-
-
-m
-
-
-
-
-cut = next(i for i,o in enumerate(m.children()) if isinstance(o,nn.AdaptiveAvgPool2d))
-m_cut = m[:cut]
-
-
-
-
-len(m_cut)
-
-
-
-
-def module_grandchildren(model):
-    grandkids=[]
-    for m in m_cut.children():
-        for g in m.children():
-            grandkids.append(g)
-    return grandkids
-
-
-
-
-m_gc = module_grandchildren(m_cut)
-
-
-
-
-xb,yb = get_batch(data.valid_dl, learn)
-
-
-
-
-pred = m_cut(xb)
-
-
-
-
-pred.shape
-
-
-# To find number of inputs, here we have 128 minibatch of input size 512, 4x4
-
-
-
-#number of inputs to our head
-ni = pred.shape[1]
-
-
-# Note we use both Avg and Max pool and concatenate them together eg
-# https://www.cs.cmu.edu/~tzhi/publications/ICIP2016_two_stage.pdf
-
-
-
-#export
-class AdaptiveConcatPool2d(nn.Module):
-    def __init__(self, sz=1):
-        super().__init__()
-        self.output_size = sz
-        self.ap = nn.AdaptiveAvgPool2d(sz)
-        self.mp = nn.AdaptiveMaxPool2d(sz)
-    def forward(self, x): return torch.cat([self.mp(x), self.ap(x)], 1)
-
-
-
-
-nh = 40
-
-
 # #### weights and stat functions
 
 # histc()
@@ -474,7 +352,84 @@ stat_iter = 0
 
 
 
-#saving weights to disk for later calcs (too much for RAM)
+#with code from https://gist.github.com/derricw/95eab740e1b08b78c03f
+def bin_ndarray(ndarray, new_shape, operation='mean'):
+    """
+    re-bins a batch of weigths to new_shape and takes means
+    """
+    assert operation.lower() in ['sum', 'mean']
+    if type(ndarray) is not np.ndarray:
+        ndarray=ndarray.cpu().numpy()
+    try:
+        ndarray=ndarray.reshape((-1,REBIN_SHAPE[0]))
+    except (RuntimeError,ValueError) as e:
+        redim=(int(ndarray.size/REBIN_SHAPE[0]),REBIN_SHAPE[0])
+        #incompatible size, coerce it to fit
+        ndarray = np.resize(ndarray,redim)
+    if ndarray.shape[0]<new_shape[0]:
+        #eg if Linear layer with less classes than requred dimension, then pad with zeros
+        b = ndarray.transpose().copy()
+        b.resize(new_shape, refcheck=False)
+        ndarray = b.transpose()
+    cp = [(d, c//d) for d, c in zip(new_shape, ndarray.shape)]
+    flattened = [l for p in cp for l in p]
+    try:
+        ndarray = np.reshape(ndarray,flattened)
+    except (RuntimeError,ValueError) as e:
+        #incompatible size, coerce it to fit
+        ndarray = np.resize(ndarray,flattened)
+    for i in range(len(new_shape)):
+        if operation.lower() == "sum":
+            ndarray = ndarray.sum(-1*(i+1))
+        elif operation.lower() == "mean":
+            ndarray = ndarray.mean(-1*(i+1))
+    return ndarray
+
+
+
+
+#see https://stackoverflow.com/questions/8090229/resize-with-averaging-or-rebin-a-numpy-2d-array
+#alternate method to bin_ndarray
+def get_row_compressor(old_dimension, new_dimension):
+    dim_compressor = np.zeros((new_dimension, old_dimension))
+    bin_size = float(old_dimension) / new_dimension
+    next_bin_break = bin_size
+    which_row = 0
+    which_column = 0
+    while which_row < dim_compressor.shape[0] and which_column < dim_compressor.shape[1]:
+        if round(next_bin_break - which_column, 10) >= 1:
+            dim_compressor[which_row, which_column] = 1
+            which_column += 1
+        elif next_bin_break == which_column:
+
+            which_row += 1
+            next_bin_break += bin_size
+        else:
+            partial_credit = next_bin_break - which_column
+            dim_compressor[which_row, which_column] = partial_credit
+            which_row += 1
+            dim_compressor[which_row, which_column] = 1 - partial_credit
+            which_column += 1
+            next_bin_break += bin_size
+    dim_compressor /= bin_size
+    return dim_compressor
+
+
+def get_column_compressor(old_dimension, new_dimension):
+    return get_row_compressor(old_dimension, new_dimension).transpose()
+
+def compress_and_average(array, new_shape):
+    '''eg
+    # Note: new shape should be smaller in both dimensions than old shape
+    compress_and_average(np.array([[50, 7, 2, 0, 1],
+                               [0, 0, 2, 8, 4],
+                               [4, 1, 1, 0, 0]]), (2, 3))
+    '''
+    return np.mat(get_row_compressor(array.shape[0], new_shape[0])) *            np.mat(array) *            np.mat(get_column_compressor(array.shape[1], new_shape[1]))
+
+
+
+
 def append_hist_stats(hook, mod, inp, outp):
     '''Note that the hook is a different instance for each layer type
     ie XResNet has its own hook object, AdaptiveConcatPool2d has its own hook object etc
@@ -484,13 +439,38 @@ def append_hist_stats(hook, mod, inp, outp):
     means,stds,hists = hook.stats
     if mod.training:
         #eg outp.data shape is [64,512,4,4]
-        print(f"{str(mod).split('(')[0]} shape: {outp.data.shape}")
+        #print(f"{str(mod).split('(')[0]} shape: {outp.data.shape}")
         means.append(outp.data.mean().cpu())
         stds.append(outp.data.std().cpu())
         if isinstance(mod, nn.Linear):
             hists.append(outp.data.cpu().histc(40,-10,10)) #no relu here
         else:
             hists.append(outp.data.cpu().histc(40,0,10)) #no negatives
+
+
+
+
+def append_hist_rebinned_stats(hook, mod, inp, outp):
+    '''Note that the hook is a different instance for each layer type
+    ie XResNet has its own hook object, AdaptiveConcatPool2d has its own hook object etc
+    '''
+    if not hasattr(hook,'stats'): 
+        hook.stats = ([],[],[])
+    #richer storage than just means but down want to store all data
+    if not hasattr(hook,'bins'): 
+        hook.bins = ([])
+    means,stds,hists = hook.stats
+    rebinned = hook.bins
+    if mod.training:
+        #eg outp.data shape is [64,512,4,4]
+        #print(f"{str(mod).split('(')[0]} shape: {outp.data.shape}")
+        means.append(outp.data.mean().cpu())
+        stds.append(outp.data.std().cpu())
+        if isinstance(mod, nn.Linear):
+            hists.append(outp.data.cpu().histc(40,-10,10)) #no relu here
+        else:
+            hists.append(outp.data.cpu().histc(40,0,10)) #no negatives
+        rebinned.append(bin_ndarray(outp.data.cpu(), REBIN_SHAPE, operation='mean'))
 
 
 
@@ -605,113 +585,10 @@ def chunks(l, n):
 
 
 
-def calc_hook_epoch_deltas(data_path, index_dict, tot_epochs, model_size):
-    '''Differences between weights between epochs for corresponding layers 
-    - assumes batches are ordered'''
-    #layers of model
-    model_layers = [v for v in list(index_dict.values())[:model_size]]
-
-    # for shallow is 525
-    runs = int(len(index_dict) / model_size)
-    denom = int(runs / tot_epochs)
-
-    epoch_chunks = list(chunks(list(index_dict.keys()), denom))
-    first_epoch_data = epoch_chunks[0]
-
-    # block of each full model iteration - want delta between corresponding layers in these
-    first_epoch_batches = list(chunks(first_epoch_data, model_size))
-    # unpack 2d list to 1d
-    first_epoch_batches_list = list(chain.from_iterable(first_epoch_batches))
-    first_epoch_batch_indexes = {key: index_dict[key] for key in first_epoch_batches_list if key in index_dict.keys()}
-
-    model_deltas = {}
-    i = 0
-    model_count = 0
-    for key, v in first_epoch_batch_indexes.items():
-        # note the step to jump to corresponding layer in next batch
-        for offset in range(0, denom*tot_epochs-denom, denom):
-            d1 = read_hist_stats(f'{data_path}/{key + offset+ denom-1}.npy')
-            d0 = read_hist_stats(f'{data_path}/{key + offset}.npy')
-            if d1.size() == d0.size():
-                delta = d1 - d0
-            else:
-                #presumably due to shuffle=on, should not hit here with shuffle=off, TODO test this
-                print(f'i: {i}, key: {key}, v: {v} d1.size:{d1.size()}, d0.size:{d0.size()}')
-
-                d1_shp=list(d1.size())
-                d0_shp=list(d0.size())
-                #total hack, and doesnt really make sense anyway as if sizes are different we 
-                #shouldn't be differenceing
-                d1_0=int(d1_shp[0])
-                d0_0=int(d0_shp[0])
-                if len(d1_shp)==4:
-                    if d1_0>d0_0:
-                        d2 = d1[:int(d0_shp[0]),d1_shp[1]-1,d1_shp[2]-1,d1_shp[3]-1]
-                    else:
-                        d2 = d0[:d1_shp[0],d0_shp[1]-1,d0_shp[2]-1,d0_shp[3]-1]
-                elif len(d1_shp)==3:
-                    if d1_0>d0_0:
-                        d2 = d1[:d0_shp[0],d1_shp[1]-1,d1_shp[2]-1]
-                    else:
-                        d2 = d0[:d1_shp[0],d0_shp[1]-1,d0_shp[2]-1]
-                elif len(d1_shp)==2:
-                    if d1_0>d0_0:
-                        d2 = d1[:d0_shp[0],d1_shp[1]-1]
-                    else:
-                        d2 = d0[:d1_shp[0],d0_shp[1]-1]
-                delta = d2
-            model_deltas.setdefault(f'{model_count}', []).append(delta)
-            model_count += 1
-            if model_count >= tot_epochs:
-                model_count = 0
-            i += 1
-    print(f'{i} mem use: {py.memory_info()[0] / 2. ** 30}')
-    return model_deltas
-
-
-
-
-def calc_hook_batch_deltas(data_path, index_dict, tot_epochs, epoch, model_size):
-    '''Differences between weights between batches for corresponding layers 
-    - idicator of data variation between batches
-    @Return: dict of key: layer index and value: list of deltas between batches'''
-    assert isinstance(tot_epochs, int)
-    assert isinstance(epoch, int)
-
-    #for shallow is 525
-    runs=int(len(index_dict)/model_size)
-    denom=int(runs/tot_epochs)
-
-    epoch_chunks = list(chunks(list(index_dict.keys()), denom))
-    epoch_data = epoch_chunks[epoch]
-    
-    #block of each full model iteration - want delta between corresponding layers in these
-    batches=list(chunks(epoch_data, model_size))
-    #unpack 2d list to 1d
-    batches_list=list(chain.from_iterable(batches))
-    batch_indexes= {key: index_dict[key] for key in batches_list if key in index_dict.keys()}
-    deltas_dict={}
-
-    deltas=[]
-    model_deltas={}
-    i=0
-    model_count =0
-    for key,v in batch_indexes.items():
-        #so when get to last batch dont try to read in next one
-        if i<len(batch_indexes)-model_size:
-            # note the step to jump to corresponding layer in next batch
-            d1=read_hist_stats(f'{data_path}/{key+model_size}.npy')
-            d0=read_hist_stats(f'{data_path}/{key}.npy')
-            if d1.size() == d0.size():
-                delta = d1-d0
-            else:
-                print(f'i: {i}, key: {key}, v: {v} d1.size:{d1.size()}, d0.size:{d0.size()}')
-            model_deltas.setdefault(model_count, []).append(delta)
-            model_count+=1
-            if model_count>=model_size:
-                model_count=0
-            i+=1
-    return model_deltas
+def get_base_hist(data):
+    t=torch.stack(data).t().float().log1p().cpu()
+    #print(f'stack shape: {t.size()}')
+    return t
 
 
 
@@ -719,29 +596,22 @@ def calc_hook_batch_deltas(data_path, index_dict, tot_epochs, epoch, model_size)
 #get the hist data at index 2
 def get_hist(h): 
     assert len(h.stats)==3
-    return torch.stack(h.stats[2]).t().float().log1p().cpu()
-
-
-
-
-def get_delta_hist(h): 
-    return torch.stack(h.hdeltas).t().float().log1p().cpu()
+    return get_base_hist(h.stats[2])
 
 
 
 
 def diff_stats(hooks_data):
+    #diff calculates the n-th order discrete difference along given axis(defaut is last).
     histsl=[]
     msl=[]
     ssl=[]
     for h in hooks_data:
-        histsl.append(get_hist(h))
+        histsl.append(np.diff(get_hist(h)))
         ms,ss, hists = h.stats
-        msl.append(ms)
-        ssl.append(ss)
-    del_ms=np.diff(msl)
-    del_ss=np.diff(ssl)
-    return del_ms,del_ss
+        msl.append(np.diff(ms))
+        ssl.append(np.diff(ss))
+    return msl,ssl, histsl
 
 
 
@@ -767,7 +637,313 @@ def get_mid_mins(h, max_hist):
     return h1[int((max_hist/2)-1):int((max_hist/2)+2)].sum(0)/h1.sum(0)
 
 
-# #### plotting
+
+
+#intra batch histogram difference
+def delta_hists(data):
+    diff_data=[]
+    for h in data:
+        diff_data.append(np.diff(get_hist(h)))
+    return diff_data
+
+
+
+
+#batch to batch histogram difference
+def delta_bb_hists(data):
+    diff_bb_data=[]
+    for h in data:
+        diff_bb_data.append(np.diff(get_hist(h), axis=0))
+    return diff_bb_data
+
+
+
+
+#eg learn.grad_rebinned
+def get_stacked_diff_deltas(grad_rebinned):
+    bdelts=[]
+    for l in grad_rebinned:
+        a = np.vstack(l)
+        a=np.diff(a)
+        bdelts.append(a)
+    return bdelts
+
+
+
+
+#eg learn.grad_rebinned
+def get_stacked_deltas(grad_rebinned, scalar=0):
+    #can remove GRAD_SCALAR applied if required
+    b=[]
+    for l in grad_rebinned:
+        a = np.vstack(l)
+        b.append(a-scalar)
+    return b
+
+
+# #### Gradients
+
+
+
+class GradsCallback(Callback):
+    def __init__(self):
+        self.grad_hists = []
+        self.rebinned_grads = []
+        self.epoch_hists = []
+        self.epoch_rebin_grads = []
+
+    def after_backward(self):
+        batch_hists=[]
+        batch_grads=[]
+        for param in self.run.model.parameters():
+            #gradients will be +ve and -ve, so we add a scalar that we can back out later
+            r = torch.add(param.data, GRAD_SCALAR)
+            n=r.flatten().cpu().numpy()
+            batch_grads.append(n)
+            
+            h = param.data.histc(100, -1, 1).cpu().numpy()
+            batch_hists.append(h)
+        #dont want the Linear and pre-linear layers
+        self.grad_hists.append(batch_hists[:-2])
+        p=np.asarray(batch_grads[:-2])
+        #stack the arrays in sequence horizontally with hstack rather than flatten as different sizes
+        p=np.hstack(p)
+        #smash grads down to REBIN_SHAPE*REBIN_SHAPE so are managable
+        b=bin_ndarray(p, REBIN_SHAPE, operation='mean')
+        self.rebinned_grads.append(b)
+
+    def after_epoch(self):
+        self.epoch_hists.append(self.grad_hists.copy())
+        self.epoch_rebin_grads.append(self.rebinned_grads.copy())
+        self.grad_hists = []
+        self.rebinned_grads=[]
+ 
+    def after_fit(self):
+        #monkey patch into model so can access from program
+        self.run.grad_hists=self.epoch_hists.copy()
+        self.run.grad_rebinned=self.epoch_rebin_grads.copy()
+        self.epoch_hists=[]
+        self.epoch_rebin_grads=[]
+
+
+# ## Custom head
+
+# Poor result above, here we read in imagewoof model and customise for pets. Create 10 activations at end.
+# 
+# Also addpend Recorder callback to access loss
+
+
+
+learn = cnn_learner(xresnet18, data, loss_func, opt_func, c_out=10, norm=norm_imagenette, xtra_cb=[Recorder, GradsCallback])
+
+
+
+
+mdl_path
+
+
+
+
+st = torch.load(mdl_path/'iw5')
+
+
+
+
+#st.keys()
+
+
+
+
+m = learn.model
+
+
+
+
+mst = m.state_dict()
+
+
+
+
+#mst.keys()
+
+
+
+
+#check that keys are same in both dicts
+
+
+
+
+[k for k in st.keys() if k not in mst.keys()]
+
+
+
+
+m.load_state_dict(st)
+
+
+
+
+#want to remove last layer as have different ammount of categries - here 37 pet breeds. Find the AdaptiveAvgPool2d layer and use everything before this
+
+
+
+
+m
+
+
+
+
+cut = next(i for i,o in enumerate(m.children()) if isinstance(o,nn.AdaptiveAvgPool2d))
+m_cut = m[:cut]
+
+
+
+
+len(m_cut)
+
+
+
+
+def module_grandchildren(model):
+    grandkids=[]
+    for m in m_cut.children():
+        for g in m.children():
+            grandkids.append(g)
+    return grandkids
+
+
+
+
+m_gc = module_grandchildren(m_cut)
+
+
+
+
+xb,yb = get_batch(data.valid_dl, learn)
+
+
+
+
+pred = m_cut(xb)
+
+
+
+
+pred.shape
+
+
+# To find number of inputs, here we have 128 minibatch of input size 512, 4x4
+
+
+
+#number of inputs to our head
+ni = pred.shape[1]
+
+
+# Note we use both Avg and Max pool and concatenate them together eg
+# https://www.cs.cmu.edu/~tzhi/publications/ICIP2016_two_stage.pdf
+
+
+
+#export
+class AdaptiveConcatPool2d(nn.Module):
+    def __init__(self, sz=1):
+        super().__init__()
+        self.output_size = sz
+        self.ap = nn.AdaptiveAvgPool2d(sz)
+        self.mp = nn.AdaptiveMaxPool2d(sz)
+    def forward(self, x): return torch.cat([self.mp(x), self.ap(x)], 1)
+
+
+
+
+nh = 40
+
+
+# ### plotting functions
+
+
+
+def reshape_h_data(hook_d):
+    reshaped=[]
+    for d in hook_d:
+        h_bins = d.bins
+        data=np.vstack(h_bins) 
+        reshaped.append(data)
+    return reshaped
+
+
+
+
+def plot_bins(hooks, model_summary, batch_max=True, scalar=0.5, cmap=plt.cm.nipy_spectral, fig_name=None):
+    '''Takes list of 2d arrays (compressed weights), resizes for plot
+        eg layer: Conv2d, len: 105 
+        vstack shape: (6720, 64) 
+        reshape: (840, 512) 
+        layer: Relu, len: 1995 
+        vstack shape: (127680, 64) 
+        reshape: (15960, 512) 
+        NB for plt.subplots layout is nrows x ncols'''
+    if len(hooks)>11:
+        fig, axes = plt.subplots(int(len(hooks)/10), int(len(hooks)/2), figsize=(20, len(hooks)*1.5))
+    else:
+        fig, axes = plt.subplots(1, len(hooks), figsize=(20, 18))
+    #global min/max for model
+    gmin=0
+    gmax=0
+    if batch_max:
+        for d in hooks:
+            vmin, vmax = d.min(), d.max()
+            if vmin<gmin:
+                gmin=vmin
+            if vmax>gmax:
+                gmax=vmax
+    for data, ax, mod in zip(hooks, axes.ravel(), model_summary):
+        try:
+            data=data.reshape((-1,REBIN_SHAPE[0]*int(REBIN_SHAPE[0]/8)))
+        except (RuntimeError,ValueError) as e:
+            #redim=(int(data.size/REBIN_SHAPE[0]*int(REBIN_SHAPE[0]/8)),REBIN_SHAPE[0]*int(REBIN_SHAPE[0]/8))
+            redim=(int(data.size/REBIN_SHAPE[0]*int(REBIN_SHAPE[0]/8)/8),int(REBIN_SHAPE[0]*int(REBIN_SHAPE[0]/8)*8))
+            data = np.resize(data,redim)
+        if not batch_max:
+            gmin, gmax = data.min(), data.max()
+        mn=round(np.mean(data), 2)
+        st=round(np.std(data), 2)
+        # use global min / max to ensure all weights are shown on the same scale
+        #jet is OK but nipy better
+        ax.matshow(data, cmap=cmap, vmin=scalar * gmin,
+                       vmax=scalar * gmax, alpha=0.8)
+        ax.set_xticks(())
+        ax.set_yticks(())
+        ax.title.set_text(mod)
+        #add mean and std deviation of plot data
+        ax.text(0.5,-0.1, str(mn)+' '+str(st), size=8, ha="center", 
+         transform=ax.transAxes)
+    
+    plt.subplots_adjust(wspace=0.1, hspace=0.1)
+    if fig_name:
+        plt.savefig(IMG_PATH+'/'+NAME+'_'+fig_name)
+    plt.show()
+
+    
+
+
+
+
+def plot_rasters(data, size):
+    fig, axes = plt.subplots(4, 4)
+    # use global min / max to ensure all weights are shown on the same scale
+    vmin, vmax = data.min(), data.max()
+    #for coef, ax in zip(data.T, axes.ravel()):
+    for coef, ax in zip(data, axes.ravel()):
+        ax.matshow(coef.reshape(size), cmap=plt.cm.jet, vmin=.5 * vmin,
+                   vmax=.5 * vmax)
+        ax.set_xticks(())
+        ax.set_yticks(())
+
+    plt.show()
+
 
 
 
@@ -795,24 +971,9 @@ def plot_hooks(hooks, model, fig_name=None):
         idxs=[]
         for j,m in enumerate(learn.model):
             titles.append(str(j)+' '+str(m).split('(')[0])
-        plt.legend(titles)
+        plt.legend(titles, bbox_to_anchor=(1.04,1), loc="upper left")
     else:
-        plt.legend(range(len(hooks)))
-    if fig_name:
-        plt.savefig(IMG_PATH+'/'+NAME+'_'+fig_name)
-    plt.show()
-
-
-
-
-def plot_deltas(deltas, smoother, fig_name=None):
-    half_plots=int((len(deltas)/2) + (len(deltas)/2 % 1 > 0))
-    fig,axes= plt.subplots(half_plots,2, figsize=(10,half_plots*2))
-    for ax,h in zip(axes.flatten(), deltas):
-        h = smooth(h, smoother)
-        ax.plot(h)
-        ax.set_title('delta')
-    plt.legend(range(len(deltas)))
+        plt.legend(range(len(hooks)), bbox_to_anchor=(1.04,1), loc="upper left")
     if fig_name:
         plt.savefig(IMG_PATH+'/'+NAME+'_'+fig_name)
     plt.show()
@@ -844,14 +1005,19 @@ def plot_hooks_hist(hooks, fig_name=None, model=None):
 
 
 
-def plot_hooks_delta_hist(hooks, fig_name=None,model=None):
-    #subplots(rows,colums)
+def plot_hooks_hist_diffs(hooks, cmap=plt.cm.viridis, norm=False, fig_name=None, model=None):
+    #TODO merge with plot_hooks_hist
     half_plots=int((len(hooks)/2) + (len(hooks)/2 % 1 > 0))
     fig,axes = plt.subplots(half_plots,2, figsize=(15,int(len(hooks)/2)*3))
     i=0
+    normalize = mpl.colors.Normalize(vmin=-1, vmax=1)
     for ax,h in zip(axes.flatten(), hooks):
-        ax.imshow(get_delta_hist(h), origin='lower')
-        ax.imshow(get_delta_hist(h))
+        if norm:
+            ax.imshow(h, cmap=cmap, norm=normalize, origin='lower')
+            ax.imshow(h, cmap=cmap, norm=normalize)
+        else:
+            ax.imshow(h, cmap=cmap, origin='lower')
+            ax.imshow(h, cmap=cmap)
         ax.set_aspect('auto')
         ax.axis('on')
         if model:
@@ -859,6 +1025,55 @@ def plot_hooks_delta_hist(hooks, fig_name=None,model=None):
                 if i == j:
                     title=str(m).split('(')[0]
                     ax.set_title(title)
+        i+=1
+    plt.tight_layout()
+    if fig_name:
+        plt.savefig(IMG_PATH+'/'+NAME+'_'+fig_name)
+    plt.show()
+
+
+
+
+def plot_hooks_hist_diff_lines(hooks, fig_name=None, model=None):
+    #TODO merge with plot_hooks_hist
+    half_plots=int((len(hooks)/2) + (len(hooks)/2 % 1 > 0))
+    fig,axes = plt.subplots(half_plots,2, figsize=(15,int(len(hooks)/2)*3))
+    i=0
+    for ax,h in zip(axes.flatten(), hooks):
+        ax.plot(h)
+        if model:
+            for j,m in enumerate(learn.model):
+                if i == j:
+                    title=str(m).split('(')[0]
+                    ax.set_title(title)
+        i+=1
+    plt.tight_layout()
+    if fig_name:
+        plt.savefig(IMG_PATH+'/'+NAME+'_'+fig_name)
+    plt.show()
+
+
+
+
+def plot_grad_hist(grad_list, full_model, fig_name=None):
+    #subplots(rows,colums)
+    layer_data={}
+    for e,epoch in enumerate(grad_list):
+        for b,batch in enumerate(epoch):
+            for l,layer in enumerate(batch):
+                #histogram tensor here
+                layer_data.setdefault(l,[]).append(layer)
+    half_plots=int((len(layer_data)/2) + (len(layer_data)/2 % 1 > 0))
+    fig,axes = plt.subplots(half_plots,2, figsize=(18,int(len(layer_data)/2)*3))
+    i=0
+    for ax,ld in zip(axes.flatten(), layer_data.values()):
+        ax.imshow(get_base_hist(ld), origin='lower')
+        ax.imshow(get_base_hist(ld))
+        ax.set_aspect('auto')
+        ax.axis('on')
+        for j,m in enumerate(full_model):
+            if i == j:
+                ax.set_title(m)
         i+=1
     plt.tight_layout()
     if fig_name:
@@ -936,28 +1151,26 @@ def plot_raw_layers(hooks):
 
 
 
-#after Fchaubard https://discuss.pytorch.org/t/understanding-deep-network-visualize-weights/2060/7
-def plot_kernels(tensor, num_cols=6):
-    if isinstance(tensor, list):
-        print(len(tensor))
-        print(tensor[0].shape)
-    if not tensor.ndim==4:
-        #not plotting Flatten or Linear layers
-        return
-    if not tensor.shape[-1]==3:
-        raise Exception("last dim needs to be 3 to plot")
-    num_kernels = tensor.shape[0]
-    num_rows = 1+ num_kernels // num_cols
-    fig = plt.figure(figsize=(num_cols,num_rows))
-    for i in range(tensor.shape[0]):
-        ax1 = fig.add_subplot(num_rows,num_cols,i+1)
-        ax1.imshow(tensor[i])
-        ax1.axis('off')
-        ax1.set_xticklabels([])
-        ax1.set_yticklabels([])
-
-    plt.subplots_adjust(wspace=0.1, hspace=0.1)
+def plot_deltas(deltas, smoother, fig_name=None):
+    half_plots=int((len(deltas)/2) + (len(deltas)/2 % 1 > 0))
+    fig,axes= plt.subplots(half_plots,2, figsize=(10,half_plots*2))
+    for ax,h in zip(axes.flatten(), deltas):
+        h = smooth(h, smoother)
+        ax.plot(h)
+        ax.set_title('delta')
+    plt.legend(range(len(deltas)))
+    if fig_name:
+        plt.savefig(IMG_PATH+'/'+NAME+'_'+fig_name)
     plt.show()
+
+
+
+
+def get_model_layer_list(model):
+    mdl=[]
+    for mod in model:
+        mdl.append(str(mod).split('(')[0])
+    return mdl
 
 
 
@@ -1038,31 +1251,44 @@ len(learn.model)
 
 # [batch_size, channels, height, width]
 
+# <pre>
+# Learn.fit
+#     Learner.all_batches
+#         Learner.one_batch()
+#             def one_batch(self, i, xb, yb):
+#                 #call model on a batch
+#                 try:
+#                     self.iter = i
+#                     self.xb, self.yb = xb, yb
+#                     self("begin_batch")
+#                     #here is where we call Module.__call__
+#                     self.pred = self.model(self.xb)
+#                     self("after_pred")
+#                     self.loss = self.loss_func(self.pred, self.yb)
+#                     self("after_loss")
+#                     if not self.in_train:
+#                         return
+#                     self.loss.backward()
+#                     self("after_backward")
+#                     self.opt.step()
+#                     self("after_step")
+#                     self.opt.zero_grad()
+#                 except CancelBatchException:
+#                     self("after_cancel_batch")
+#                 finally:
+#                     self("after_batch")
+#             
+#                 Module.__call__
+#                     result = self.forward(*input, **kwargs)
+#                     for hook in self._forward_hooks.values():
+#                         hook_result = hook(self, input, result)
+#                         ->runs the append_hists_stats() hook here
+# </pre>
 
 
-stat_iter = 0
 
-
-
-
-INDEX_DICT={}
-SHAPE_DICT={}
-HOOK_DATA_PATH = HOOK_PATH/'naive'
-HOOK_DATA_PATH.mkdir(exist_ok=True)
-
-
-
-
-#5
-with Hooks(learn.model, append_hist_stats_save) as hooks_naive: 
+with Hooks(learn.model, append_hist_rebinned_stats) as hooks_naive: 
     learn.fit(5, cbsched)
-
-
-
-
-write_index_file(data=INDEX_DICT, file_name=HOOK_DATA_PATH/'index.txt')
-write_index_file(data=SHAPE_DICT, file_name=HOOK_DATA_PATH/'shape.txt')
-print(f"wrote {len(INDEX_DICT)} items to : {HOOK_DATA_PATH/'index.txt'}")
 
 
 # <pre>
@@ -1076,49 +1302,7 @@ print(f"wrote {len(INDEX_DICT)} items to : {HOOK_DATA_PATH/'index.txt'}")
 
 
 
-#temp for testing only
-#HOOK_DATA_PATH=HOOK_PATH/'naive'
-
-
-
-
-index_dict=read_index_file(HOOK_DATA_PATH.absolute(), 'index.txt')
-
-
-
-
-model_layers = [v for v in list(index_dict.values())[:len(learn.model)]]
-model_layers
-
-
-
-
-batch_deltas=calc_hook_batch_deltas(HOOK_DATA_PATH.absolute(), index_dict, tot_epochs=5,epoch=0, model_size=len(learn.model))
-
-
-
-
-len(batch_deltas)
-
-
-
-
-len(batch_deltas[0])
-
-
-
-
-epoch_deltas=calc_hook_epoch_deltas(HOOK_DATA_PATH.absolute(), index_dict, tot_epochs=5, model_size=len(learn.model))
-
-
-
-
-len(epoch_deltas)
-
-
-
-
-len(epoch_deltas[list(epoch_deltas.keys())[0]])
+type(learn.grad_hists)
 
 
 # ##### Plots
@@ -1131,6 +1315,159 @@ plot_hooks(hooks_naive,fig_name='naive_stats.png',model=learn.model)
 
 
 type(hooks_naive)
+
+
+
+
+mod_summary=get_model_layer_list(learn.model)
+
+
+
+
+if SAVE_COMPRESSED_WTS:
+    np.save(f'{HOOK_PATH}/hooks_naive.npy', hooks_naive)
+    np.save(f'{HOOK_PATH}/hooks_naive_grad_rebinned', hooks_naive)
+
+
+
+
+h=reshape_h_data(hooks_naive)
+
+
+
+
+h[0].shape
+
+
+# #### Plot binned (compressed) weights
+# 
+
+
+
+plot_bins(h, mod_summary, batch_max=True, scalar=0.25, cmap=plt.cm.nipy_spectral, fig_name='hooks_naive_bmax.png')
+
+
+
+
+plot_bins(h, mod_summary, batch_max=False, scalar=0.8, cmap=plt.cm.nipy_spectral,fig_name='hooks_naive.png')
+
+
+# #### Gradients
+
+
+
+#eg learn.grad_rebinned
+def get_stacked_diff_deltas(grad_rebinned):
+    bdelts=[]
+    for l in grad_rebinned:
+        a = np.vstack(l)
+        a=np.diff(a)
+        bdelts.append(a)
+    return bdelts
+
+
+
+
+b=get_stacked_deltas(learn.grad_rebinned)
+
+
+
+
+#subtract the scalar we applied before tanking means
+e=b[0]-GRAD_SCALAR
+
+
+
+
+
+
+
+
+
+def plot_a_bin(hooks, model_summary, batch_max=True, scalar=0.5, cmap=plt.cm.nipy_spectral, fig_name=None):
+    #global min/max for model
+    d=hooks[0]
+    for h in d:
+        plt.plot(h)
+    plt.show()
+
+
+
+
+def plot_t_raster(data):
+    # use global min / max to ensure all weights are shown on the same scale
+    print(f'min: {np.amin(data)}, max: {np.amax(data)}')
+    vmin, vmax = data.min(), data.max()
+    try:
+        d=data.reshape((-1,REBIN_SHAPE[0],REBIN_SHAPE[0]))
+    except (RuntimeError,ValueError) as e:
+        redim=(int(data.size/REBIN_SHAPE[0]),REBIN_SHAPE[0],REBIN_SHAPE[0])
+        d = np.resize(data,redim)
+    for i in range(10):
+        plt.matshow(d[i], cmap=plt.cm.jet, vmin=.5 * vmin,
+                       vmax=.5 * vmax)
+    plt.show()
+
+
+
+
+len(learn.grad_rebinned)
+
+
+
+
+plt_ttle=['epoch '+str(i) for i in range(5)]
+
+
+
+
+plot_bins(bd, plt_ttle, batch_max=False, scalar=0.25, cmap=plt.cm.nipy_spectral, fig_name='hooks_naive_grads.png')
+
+
+# #### Delta Grads
+
+
+
+d=np.diff(e)
+
+
+
+
+plot_t_raster(d)
+
+
+
+
+plot_t_raster(h[0])
+
+
+
+
+type(e)
+
+
+
+
+plot_bins(bdelts, mod_summary, batch_max=False, scalar=0.25, cmap=plt.cm.nipy_spectral, fig_name='hooks_naive_grad_delts.png')
+
+
+
+
+all_layers=[]
+for i,m in enumerate(learn.model):
+    try:
+        for j, k in enumerate(m):
+            #cant traverse deeper into ResBlock as dont know if used id conv or not
+            print(f'layer: {i} sub-layer: {j}, op: {k}')
+            all_layers.append(k)
+    except TypeError as e:            
+        print(f'layer: {i} op: {m}')
+        all_layers.append(m)
+
+
+
+
+len(all_layers)
 
 
 # #### Histograms
@@ -1158,41 +1495,77 @@ ms[0]
 
 
 
+hooks_naive_diffs=delta_hists(hooks_naive)
+
+
+
+
+len(hooks_naive_diffs)
+
+
+
+
+hooks_naive_diffs[0].shape
+
+
+
+
+plot_hooks_hist_diffs(hooks_naive_diffs, cmap=plt.cm.viridis, norm=True, fig_name='naive_hists_diffs.png',model=learn.model)
+
+
+
+
+hooks_bb_naive_diffs=delta_bb_hists(hooks_naive)
+
+
+
+
+plot_hooks_hist_diffs(hooks_bb_naive_diffs, cmap=plt.cm.viridis, norm=True, fig_name='naive_hists_diffs.png',model=learn.model)
+
+
+
+
 plot_hooks_hist(hooks_naive,fig_name='naive_hists.png',model=learn.model)
 
 
 
 
-#plot_mid_mins(hooks_naive)
+len(hooks_naive)
 
 
 
 
-naive_del_ms,naive_del_ss=diff_stats(hooks_naive)
+naive_del_ms,naive_del_ss, del_hist=diff_stats(hooks_naive)
 
 
-# Means change between each layer
-
-
-
-plot_deltas(naive_del_ms, 50,fig_name='naive_del_ms.png')
+# Means changes
 
 
 
+plot_deltas(naive_del_ms, 50, fig_name='naive_del_ms.png')
 
-plot_deltas(naive_del_ss, 50,fig_name='naive_del_sds.png')
+
+
+
+plot_deltas(naive_del_ss, 50, fig_name='naive_del_sds.png')
+
+
+
+
+#del_hist=np.vstack(del_hist)
+
+
+
+
+#del_hist.shape
+
+
+
+
+#plot_deltas(del_hist, 50, fig_name='naive_del_hists.png')
 
 
 # Means change between first and last layer
-
-
-
-first_n_last = [naive_del_ms[0], naive_del_ms[-1]]
-print(len(first_n_last))
-naive_del_fal=np.diff(first_n_last)
-print(len(naive_del_fal))
-plot_deltas(naive_del_fal, 50)
-
 
 
 
@@ -1207,21 +1580,6 @@ len(learn.recorder.losses)/len(learn.recorder.val_losses)
 
 
 #18.5 * more training data than validation data 
-
-
-
-
-# Get a sorted list of the objects and their sizes
-sorted([(x, sys.getsizeof(globals().get(x))) for x in dir() if not x.startswith('_') and x not in sys.modules and x not in ipython_vars], key=lambda x: x[1], reverse=True)
-
-
-
-
-#clear mem
-naive_del_ms=None
-naive_del_ss=None
-hooks_naive=None
-naive_del_fal=None
 
 
 # ## adapt_model and gradual unfreezing
@@ -1278,7 +1636,7 @@ def adapt_simple_model(learn, data):
 
 
 
-learn = cnn_learner(xresnet18, data, loss_func, opt_func, c_out=10, norm=norm_imagenette, xtra_cb=Recorder)
+learn = cnn_learner(xresnet18, data, loss_func, opt_func, c_out=10, norm=norm_imagenette, xtra_cb=[Recorder, GradsCallback])
 learn.model.load_state_dict(torch.load(mdl_path/'iw5'))
 
 
@@ -1301,20 +1659,6 @@ len(learn.model); HOOK_DEPTH
 
 # Grab all parameters in the body (the m_cut bit) and dont train these - just train the head
 
-
-
-INDEX_DICT={}
-SHAPE_DICT={}
-HOOK_DATA_PATH = HOOK_PATH/'freeze'
-HOOK_DATA_PATH.mkdir(exist_ok=True)
-
-
-
-
-#reset
-stat_iter=0
-
-
 # #### Freeze everything before head
 
 
@@ -1326,15 +1670,8 @@ for i in range(len(learn.model)-3):
 
 
 
-with Hooks(learn.model, append_hist_stats_save) as hooks_freeze: 
+with Hooks(learn.model, append_hist_rebinned_stats) as hooks_freeze: 
     learn.fit(3, sched_1cycle(1e-2, 0.5))
-
-
-
-
-write_index_file(data=INDEX_DICT, file_name=HOOK_DATA_PATH/'index.txt')
-write_index_file(data=SHAPE_DICT, file_name=HOOK_DATA_PATH/'shape.txt')
-print(f"wrote {len(INDEX_DICT)} items to : {HOOK_DATA_PATH/'index.txt'}")
 
 
 
@@ -1344,22 +1681,118 @@ plot_hooks(hooks_freeze,fig_name='freeze_layer_stats.png',model=learn.model)
 
 
 
+if SAVE_COMPRESSED_WTS:
+    np.save(f'{HOOK_PATH}/hooks_freeze.npy', hooks_freeze)
+    np.save(f'{HOOK_PATH}/hooks_freeze_grad_rebinned', learn.grad_rebinned)
+
+
+
+
+h=reshape_h_data(hooks_freeze)
+
+
+
+
+plot_bins(h, mod_summary, batch_max=True, scalar=0.25, cmap=plt.cm.nipy_spectral, fig_name='hooks_freeze_bmax.png')
+
+
+
+
+plot_bins(h, mod_summary, batch_max=False, scalar=0.8, cmap=plt.cm.nipy_spectral, fig_name='hooks_freeze.png')
+
+
+
+
 plot_hooks_hist(hooks_freeze,fig_name='freeze_hists.png',model=learn.model)
 
 
-
-
-#plot_hooks_delta_hist(hooks_freeze,fig_name='freeze_delta_hists.png',model=learn.model)
-
-
-
-
-#plot_mid_mins(hooks_freeze)
+# #### Grads
+# 
+# gradients per batch, note these are results of calcs on an epoch level, rather than layer level as called after loss.backward but before zeroing the gradients
 
 
 
+file_name = f'{HOOK_PATH}/hooks_freeze_grad_rebinned.npy'
 
-frozen_del_ms,frozen_del_ss=diff_stats(hooks_freeze)
+
+
+
+array_reloaded = np.load(file_name)
+
+
+
+
+b=[]
+for l in array_reloaded:
+    a = np.vstack(l)
+    b.append(a)
+
+
+
+
+#subtract the scalar we applied before tanking means
+e=b[0]-GRAD_SCALAR
+
+
+
+
+bd=[]
+for l in array_reloaded:
+    a = np.vstack(l)
+    bd.append(a-GRAD_SCALAR)
+
+
+
+
+#number of epochs needs to be adjusted
+plt_ttle=['epoch '+str(i) for i in range(3)]
+
+
+
+
+plot_bins(bd, plt_ttle, batch_max=False, scalar=0.25, cmap=plt.cm.nipy_spectral, fig_name='hooks_freeze_grad_rebinned.png')
+
+
+# #### Delta Grads
+# 
+# plot difference between gradients per batch, note this is done on an epoch level, rather than layer level
+# 
+# 
+
+
+
+bdelts=[]
+for l in array_reloaded:
+    a = np.vstack(l)
+    a=np.diff(a)
+    bdelts.append(a)
+
+
+
+
+plot_bins(bdelts, plt_ttle, batch_max=False, scalar=0.25, cmap=plt.cm.nipy_spectral, fig_name='hooks_freeze_grad_rebinned_deltas.png')
+
+
+
+
+d=np.diff(e)
+
+
+
+
+plot_t_raster(d)
+
+
+
+
+plot_t_raster(h[0])
+
+
+# #### weight deltas
+
+
+
+frozen_del_ms,frozen_del_ss,frozen_del_hists=diff_stats(hooks_freeze)
 
 
 
@@ -1374,38 +1807,20 @@ plot_deltas(frozen_del_ss, 50,fig_name='freeze_del_sds.png')
 
 
 
+#frozen_del_hists=np.vstack(frozen_del_hists)
+
+
+
+
+#plot_deltas(frozen_del_hists, 50,fig_name='frozen_del_hists.png')
+
+
+
+
 learn.recorder.plot_loss()
 
 
-
-
-#clear mem
-frozen_del_ms=None
-frozen_del_ss=None
-hooks_freeze=None
-
-
-
-
-# Get a sorted list of the objects and their sizes
-sorted([(x, sys.getsizeof(globals().get(x))) for x in dir() if not x.startswith('_') and x not in sys.modules and x not in ipython_vars], key=lambda x: x[1], reverse=True)
-
-
 # #### Unfreeze
-
-
-
-#reset
-stat_iter=0
-
-
-
-
-INDEX_DICT={}
-SHAPE_DICT={}
-HOOK_DATA_PATH = HOOK_PATH/'unfreeze'
-HOOK_DATA_PATH.mkdir(exist_ok=True)
-
 
 
 
@@ -1416,15 +1831,8 @@ for i in range(len(learn.model)-3):
 
 
 
-with Hooks(learn.model, append_hist_stats_save) as hooks_unfreeze: 
+with Hooks(learn.model, append_hist_rebinned_stats) as hooks_unfreeze: 
     learn.fit(5, cbsched, reset_opt=True)
-
-
-
-
-write_index_file(data=INDEX_DICT, file_name=HOOK_DATA_PATH/'index.txt')
-write_index_file(data=SHAPE_DICT, file_name=HOOK_DATA_PATH/'shape.txt')
-print(f"wrote {len(INDEX_DICT)} items to : {HOOK_DATA_PATH/'index.txt'}")
 
 
 # 
@@ -1439,22 +1847,34 @@ plot_hooks(hooks_unfreeze,fig_name='unfreeze_layer_stats.png',model=learn.model)
 
 
 
+if SAVE_COMPRESSED_WTS:
+    np.save(f'{HOOK_PATH}/hooks_unfreeze.npy', hooks_unfreeze)
+    np.save(f'{HOOK_PATH}/hooks_unfreeze_grad_rebinned', learn.grad_rebinned)
+
+
+
+
+h=reshape_h_data(hooks_unfreeze)
+
+
+
+
+plot_bins(h, mod_summary, batch_max=True, scalar=0.25, cmap=plt.cm.nipy_spectral, fig_name='hooks_unfreeze_bmax.png')
+
+
+
+
+plot_bins(h, mod_summary, batch_max=False, scalar=0.8, cmap=plt.cm.nipy_spectral, fig_name='hooks_unfreeze.png')
+
+
+
+
 plot_hooks_hist(hooks_unfreeze,fig_name='unfreeze_hists.png',model=learn.model)
 
 
 
 
-#plot_hooks_delta_hist(hooks_unfreeze,fig_name='unfreeze_delta_hists.png',model=learn.model)
-
-
-
-
-#plot_mid_mins(hooks_unfreeze)
-
-
-
-
-unfrozen_del_ms,unfrozen_del_ss=diff_stats(hooks_unfreeze)
+unfrozen_del_ms,unfrozen_del_ss, unfrozen_del_hist=diff_stats(hooks_unfreeze)
 
 
 
@@ -1469,6 +1889,16 @@ plot_deltas(unfrozen_del_ss, 50,fig_name='unfreeze_del_sds.png')
 
 
 
+#unfrozen_del_hist=np.vstack(unfrozen_del_hist)
+
+
+
+
+#plot_deltas(unfrozen_del_hist, 50,fig_name='unfrozen_del_hist.png')
+
+
+
+
 learn.recorder.plot_loss()
 
 
@@ -1476,43 +1906,24 @@ learn.recorder.plot_loss()
 # 
 # 1:27 in lesson 12
 
-
-
-#clear mem
-unfrozen_del_ms=None
-unfrozen_del_ss=None
-hooks_unfreeze=None
-
-
-
-
-# Get a sorted list of the objects and their sizes
-sorted([(x, sys.getsizeof(globals().get(x))) for x in dir() if not x.startswith('_') and x not in sys.modules and x not in ipython_vars], key=lambda x: x[1], reverse=True)
-
-
 # ## Batch norm transfer
 
 # Freeze all params that are not in the batchnorm layer or linear layer at end
 
 
 
-#reset
-stat_iter=0
-
-
-
-
-INDEX_DICT={}
-SHAPE_DICT={}
-HOOK_DATA_PATH = HOOK_PATH/'bn_freeze'
-HOOK_DATA_PATH.mkdir(exist_ok=True)
-
-
-
-
-learn = cnn_learner(xresnet18, data, loss_func, opt_func, c_out=10, norm=norm_imagenette, xtra_cb=Recorder)
+learn = cnn_learner(xresnet18, data, loss_func, opt_func, c_out=10, norm=norm_imagenette, xtra_cb=[Recorder, GradsCallback])
 learn.model.load_state_dict(torch.load(mdl_path/'iw5'))
-adapt_model(learn, data)
+
+
+
+
+if HOOK_DEPTH=='deep':
+    adapt_deep_model(learn, data)
+elif HOOK_DEPTH=='base':
+    adapt_model(learn, data)
+elif HOOK_DEPTH=='shallow':
+    adapt_simple_model(learn, data)
 
 
 
@@ -1523,7 +1934,7 @@ def apply_mod(m, f):
 
 def set_grad(m, b):
     #if linear layer (at end) or batchnorm layer in middle, dont change the gradient
-    print(type(m))
+    #print(type(m))
     if isinstance(m, (nn.Linear,nn.BatchNorm2d)): return
     if hasattr(m, 'weight'):
         for p in m.parameters(): p.requires_grad_(b)
@@ -1541,15 +1952,8 @@ apply_mod(learn.model, partial(set_grad, b=False))
 
 
 #run out of mem with deltas
-with Hooks(learn.model, append_hist_stats_save) as hooks_freeze_non_bn: 
+with Hooks(learn.model, append_hist_rebinned_stats) as hooks_freeze_non_bn: 
     learn.fit(3, sched_1cycle(1e-2, 0.5))
-
-
-
-
-write_index_file(data=INDEX_DICT, file_name=HOOK_DATA_PATH/'index.txt')
-write_index_file(data=SHAPE_DICT, file_name=HOOK_DATA_PATH/'shape.txt')
-print(f"wrote {len(INDEX_DICT)} items to : {HOOK_DATA_PATH/'index.txt'}")
 
 
 
@@ -1559,22 +1963,34 @@ plot_hooks(hooks_freeze_non_bn,fig_name='freeze_non_bn_layers.png',model=learn.m
 
 
 
+if SAVE_COMPRESSED_WTS:
+    np.save(f'{HOOK_PATH}/hooks_freeze_non_bn.npy', hooks_freeze_non_bn)
+    np.save(f'{HOOK_PATH}/hooks_freeze_non_bn_grad_rebinned', learn.grad_rebinned)
+
+
+
+
+h=reshape_h_data(hooks_freeze_non_bn)
+
+
+
+
+plot_bins(h, mod_summary, batch_max=True, scalar=0.25, cmap=plt.cm.nipy_spectral, fig_name='hooks_freeze_non_bn_bmax.png')
+
+
+
+
+plot_bins(h, mod_summary, batch_max=False, scalar=0.8, cmap=plt.cm.nipy_spectral, fig_name='hooks_freeze_non_bn.png')
+
+
+
+
 plot_hooks_hist(hooks_freeze_non_bn,fig_name='freeze_non_bn_hist.png',model=learn.model)
 
 
 
 
-#plot_hooks_delta_hist(hooks_freeze_non_bn,fig_name='freeze_non_bn_delta_hist.png',model=learn.model)
-
-
-
-
-#plot_mins(hooks_freeze_non_bn)
-
-
-
-
-freeze_non_bn_del_ms,freeze_non_bn_del_sds=diff_stats(hooks_freeze_non_bn)
+freeze_non_bn_del_ms,freeze_non_bn_del_sds,freeze_non_bn_del_hists =diff_stats(hooks_freeze_non_bn)
 
 
 
@@ -1589,24 +2005,20 @@ plot_deltas(freeze_non_bn_del_sds, 50,fig_name='freeze_non_bn_del_sds.png')
 
 
 
+#freeze_non_bn_del_hists=np.vstack(freeze_non_bn_del_hists)
+
+
+
+
+#plot_deltas(freeze_non_bn_del_hists, 50,fig_name='freeze_non_bn_del_hists.png')
+
+
+
+
 learn.recorder.plot_loss()
 
 
 # #### Unfreeze
-
-
-
-#reset
-stat_iter=0
-
-
-
-
-INDEX_DICT={}
-SHAPE_DICT={}
-HOOK_DATA_PATH = HOOK_PATH/'bn_unfreeze'
-HOOK_DATA_PATH.mkdir(exist_ok=True)
-
 
 
 
@@ -1615,15 +2027,8 @@ apply_mod(learn.model, partial(set_grad, b=True))
 
 
 
-with Hooks(learn.model, append_hist_stats_save) as hooks_unfreeze_non_bn: 
+with Hooks(learn.model, append_hist_rebinned_stats) as hooks_unfreeze_non_bn: 
     learn.fit(5, cbsched, reset_opt=True)
-
-
-
-
-write_index_file(data=INDEX_DICT, file_name=HOOK_DATA_PATH/'index.txt')
-write_index_file(data=SHAPE_DICT, file_name=HOOK_DATA_PATH/'shape.txt')
-print(f"wrote {len(INDEX_DICT)} items to : {HOOK_DATA_PATH/'index.txt'}")
 
 
 
@@ -1633,22 +2038,34 @@ plot_hooks(hooks_unfreeze_non_bn,fig_name='unfreeze_non_bn_layers.png',model=lea
 
 
 
+if SAVE_COMPRESSED_WTS:
+    np.save(f'{HOOK_PATH}/hooks_unfreeze_non_bn.npy', hooks_unfreeze_non_bn)
+    np.save(f'{HOOK_PATH}/hooks_unfreeze_non_bn_grad_rebinned', learn.grad_rebinned)
+
+
+
+
+h=reshape_h_data(hooks_unfreeze_non_bn)
+
+
+
+
+plot_bins(h, mod_summary, batch_max=True, scalar=0.25, cmap=plt.cm.nipy_spectral, fig_name='hooks_unfreeze_non_bn_bmax.png')
+
+
+
+
+plot_bins(h, mod_summary, batch_max=False, scalar=0.8, cmap=plt.cm.nipy_spectral, fig_name='hooks_unfreeze_non_bn.png')
+
+
+
+
 plot_hooks_hist(hooks_unfreeze_non_bn,fig_name='unfreeze_non_bn_hist.png',model=learn.model)
 
 
 
 
-#plot_hooks_delta_hist(hooks_unfreeze_non_bn,fig_name='unfreeze_non_bn_delta_hist.png',model=learn.model)
-
-
-
-
-#plot_mins(hooks_unfreeze_non_bn)
-
-
-
-
-unfreeze_non_bn_del_ms,unfreeze_non_bn_del_sds=diff_stats(hooks_unfreeze_non_bn)
+unfreeze_non_bn_del_ms,unfreeze_non_bn_del_sds,unfreeze_non_bn_del_hists=diff_stats(hooks_unfreeze_non_bn)
 
 
 
@@ -1659,6 +2076,16 @@ plot_deltas(unfreeze_non_bn_del_ms, 50,fig_name='unfreeze_non_bn_del_ms.png')
 
 
 plot_deltas(unfreeze_non_bn_del_sds, 50,fig_name='unfreeze_non_bn_del_sds.png')
+
+
+
+
+#unfreeze_non_bn_del_hists=np.vstack(unfreeze_non_bn_del_hists)
+
+
+
+
+#plot_deltas(unfreeze_non_bn_del_hists, 50,fig_name='unfreeze_non_bn_del_hists.png')
 
 
 
@@ -1831,7 +2258,4 @@ learn.fit(1, disc_lr_sched)
 #!./notebook2script.py 11a_transfer_learning.ipynb
 
 
-
-
-
-
+# ## Plots
