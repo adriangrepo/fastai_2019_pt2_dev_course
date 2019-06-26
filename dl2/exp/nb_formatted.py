@@ -97,6 +97,7 @@ def get_dls(train_ds, valid_ds, bs, **kwargs):
     #NB shuffle=True removed, need to manually add to kwargs if want shuffle
     return (
         DataLoader(train_ds, batch_size=bs, **kwargs),
+        #DataLoader(train_ds, batch_size=bs, shuffle=True, **kwargs),
         DataLoader(valid_ds, batch_size=bs * 2, **kwargs),
     )
 
@@ -816,7 +817,7 @@ def get_cnn_layers(data, nfs, layer, **kwargs):
 
 
 def conv_layer(ni, nf, ks=3, stride=2, **kwargs):
-    print('819 conv_layer()')
+    #print('819 conv_layer()')
     return nn.Sequential(
         nn.Conv2d(ni, nf, ks, padding=ks // 2, stride=stride), GeneralRelu(**kwargs)
     )
@@ -900,7 +901,7 @@ def get_learn_run(
     return get_runner(model, data, lr=lr, cbs=cbs, opt_func=opt_func)
 
 def conv_layer(ni, nf, ks=3, stride=2, bn=True, **kwargs):
-    print('902 conv_layer()')
+    #print('902 conv_layer()')
     layers = [
         nn.Conv2d(ni, nf, ks, padding=ks // 2, stride=stride, bias=not bn),
         GeneralRelu(**kwargs),
@@ -2301,7 +2302,7 @@ def init_cnn(m):
         init_cnn(l)
 
 def conv_layer(ni, nf, ks=3, stride=1, zero_bn=False, act=True):
-    print('2301 conv_layer()')
+    #print('2301 conv_layer()')
     bn = nn.BatchNorm2d(nf)
     nn.init.constant_(bn.weight, 0.0 if zero_bn else 1.0)
     layers = [conv(ni, nf, ks, stride=stride), bn]
