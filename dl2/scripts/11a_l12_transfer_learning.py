@@ -49,12 +49,16 @@ ipython_vars = ['In', 'Out', 'exit', 'quit', 'get_ipython', 'ipython_vars']
 
 #set to true on first run
 RETRAIN=False
+#set to false if just want to plot saved model data
+REFIT=True
 #max mem use for weights in GB in RAM:
 MAX_MEM=40
 #compress layer weights down to this size for visualisation
 REBIN_SHAPE=(64,64)
 #save very compressed weights for plots
 SAVE_COMPRESSED_WTS=True
+#saves all weights to disk- only use if really need
+SAVE_ALL_WTS=True
 #
 GRAD_SCALAR=42
 
@@ -180,14 +184,16 @@ mdl_path.mkdir(exist_ok=True)
 HOOK_PATH=mdl_path/NAME
 if SAVE_COMPRESSED_WTS:
     HOOK_PATH.mkdir(exist_ok=True)
+if SAVE_ALL_WTS:
+    HOOK_DATA_PATH=HOOK_PATH/'wts'
+    HOOK_DATA_PATH.mkdir(exist_ok=True)
 
 
 
 
 if RETRAIN:
     start=time.time()
-    learn.model = torch.nn.DataParallel(learn.model, device_ids=[0,1, 2])
-    learn.fit(500, cbsched)
+    learn.fit(40, cbsched)
     end=time.time()
     print(f'elapsed: {end-start}')
     st = learn.model.state_dict()
@@ -202,7 +208,7 @@ if RETRAIN:
     #but it gets quite fiddly and we don't recommend it. 
     #Instead, just save the parameters, and recreate the model directly.
 
-    #torch.save(st, mdl_path/'iw5')
+    torch.save(st, mdl_path/'iw5')
 else:
     print('Loading pre-trained model weights')
     learn.model.load_state_dict(torch.load(mdl_path/'iw5'))
@@ -388,48 +394,6 @@ def bin_ndarray(ndarray, new_shape, operation='mean'):
 
 
 
-#see https://stackoverflow.com/questions/8090229/resize-with-averaging-or-rebin-a-numpy-2d-array
-#alternate method to bin_ndarray
-def get_row_compressor(old_dimension, new_dimension):
-    dim_compressor = np.zeros((new_dimension, old_dimension))
-    bin_size = float(old_dimension) / new_dimension
-    next_bin_break = bin_size
-    which_row = 0
-    which_column = 0
-    while which_row < dim_compressor.shape[0] and which_column < dim_compressor.shape[1]:
-        if round(next_bin_break - which_column, 10) >= 1:
-            dim_compressor[which_row, which_column] = 1
-            which_column += 1
-        elif next_bin_break == which_column:
-
-            which_row += 1
-            next_bin_break += bin_size
-        else:
-            partial_credit = next_bin_break - which_column
-            dim_compressor[which_row, which_column] = partial_credit
-            which_row += 1
-            dim_compressor[which_row, which_column] = 1 - partial_credit
-            which_column += 1
-            next_bin_break += bin_size
-    dim_compressor /= bin_size
-    return dim_compressor
-
-
-def get_column_compressor(old_dimension, new_dimension):
-    return get_row_compressor(old_dimension, new_dimension).transpose()
-
-def compress_and_average(array, new_shape):
-    '''eg
-    # Note: new shape should be smaller in both dimensions than old shape
-    compress_and_average(np.array([[50, 7, 2, 0, 1],
-                               [0, 0, 2, 8, 4],
-                               [4, 1, 1, 0, 0]]), (2, 3))
-    '''
-    return np.mat(get_row_compressor(array.shape[0], new_shape[0])) *            np.mat(array) *            np.mat(get_column_compressor(array.shape[1], new_shape[1]))
-
-
-
-
 def append_hist_stats(hook, mod, inp, outp):
     '''Note that the hook is a different instance for each layer type
     ie XResNet has its own hook object, AdaptiveConcatPool2d has its own hook object etc
@@ -454,6 +418,7 @@ def append_hist_rebinned_stats(hook, mod, inp, outp):
     '''Note that the hook is a different instance for each layer type
     ie XResNet has its own hook object, AdaptiveConcatPool2d has its own hook object etc
     '''
+    global stat_iter
     if not hasattr(hook,'stats'): 
         hook.stats = ([],[],[])
     #richer storage than just means but down want to store all data
@@ -471,6 +436,10 @@ def append_hist_rebinned_stats(hook, mod, inp, outp):
         else:
             hists.append(outp.data.cpu().histc(40,0,10)) #no negatives
         rebinned.append(bin_ndarray(outp.data.cpu(), REBIN_SHAPE, operation='mean'))
+        if SAVE_ALL_WTS:
+            np.save(f'{HOOK_DATA_PATH}/{stat_iter}_{mod.__class__.__name__}.npy', outp.data.cpu())
+            stat_iter+=1
+            
 
 
 
@@ -616,6 +585,21 @@ def diff_stats(hooks_data):
 
 
 
+def diff_stats_axis0(hooks_data):
+    #calculate the n-th order discrete difference along first axis-between batches.
+    histsl=[]
+    msl=[]
+    ssl=[]
+    for h in hooks_data:
+        histsl.append(np.diff(get_hist(h), axis=0))
+        ms,ss, hists = h.stats
+        msl.append(np.diff(ms, axis=0))
+        ssl.append(np.diff(ss, axis=0))
+    return msl,ssl, histsl
+
+
+
+
 def smooth(y, box_pts):
     box = np.ones(box_pts)/box_pts
     y_smooth = np.convolve(y, box, mode='same')
@@ -660,7 +644,7 @@ def delta_bb_hists(data):
 
 
 #eg learn.grad_rebinned
-def get_stacked_diff_deltas(grad_rebinned):
+def get_stacked_diff_grads(grad_rebinned):
     bdelts=[]
     for l in grad_rebinned:
         a = np.vstack(l)
@@ -672,7 +656,7 @@ def get_stacked_diff_deltas(grad_rebinned):
 
 
 #eg learn.grad_rebinned
-def get_stacked_deltas(grad_rebinned, scalar=0):
+def get_stacked_grads(grad_rebinned, scalar=0):
     #can remove GRAD_SCALAR applied if required
     b=[]
     for l in grad_rebinned:
@@ -726,6 +710,24 @@ class GradsCallback(Callback):
         self.epoch_rebin_grads=[]
 
 
+
+
+class WtsCallback(Callback):
+    '''save the change in weights to disk for each batch'''
+    def __init__(self):
+        self.start_wts = None
+
+    def begin_batch(self):
+        dummy=self.run.model
+        self.start_wts=self.run.model.data.copy()
+
+    def after_batch(self):
+        deltas=self.run.model.data.cpu()-self.start_wts.cpu()
+        np.save(f'{HOOK_DATA_PATH}/{stat_iter}.npy', deltas)
+
+ 
+
+
 # ## Custom head
 
 # Poor result above, here we read in imagewoof model and customise for pets. Create 10 activations at end.
@@ -734,7 +736,7 @@ class GradsCallback(Callback):
 
 
 
-learn = cnn_learner(xresnet18, data, loss_func, opt_func, c_out=10, norm=norm_imagenette, xtra_cb=[Recorder, GradsCallback])
+learn = cnn_learner(xresnet18, data, loss_func, opt_func, c_out=10, norm=norm_imagenette, xtra_cb=[Recorder])
 
 
 
@@ -1175,6 +1177,37 @@ def get_model_layer_list(model):
 
 
 
+def plot_a_bin(hooks, model_summary, run=0, batch_max=True, scalar=0.5, cmap=plt.cm.nipy_spectral, fig_name=None):
+    #global min/max for model
+    d=hooks[run]
+    for h in d:
+        plt.plot(h)
+    plt.show()
+
+
+
+
+def plot_t_raster(data, pltrange=None, num_plots=10, cmap=plt.cm.jet):
+    # use global min / max to ensure all weights are shown on the same scale
+    print(f'min: {np.amin(data)}, max: {np.amax(data)}')
+    if not pltrange:
+        vmin, vmax = data.min(), data.max()
+    else:
+        vmin, vmax =pltrange[0],pltrange[1]
+    try:
+        d=data.reshape((-1,REBIN_SHAPE[0],REBIN_SHAPE[0]))
+    except (RuntimeError,ValueError) as e:
+        redim=(int(data.size/REBIN_SHAPE[0]),REBIN_SHAPE[0],REBIN_SHAPE[0])
+        d = np.resize(data,redim)
+    for i in range(num_plots):
+        plt.matshow(d[i], cmap=cmap, vmin=.5 * vmin,
+                       vmax=.5 * vmax)
+        plt.title(f'plot {i} of {num_plots} from {d.shape[0]}')
+    plt.show()
+
+
+
+
 for i,m in enumerate(learn.model):
     print(f'i: {i}, model part: {m}')
 
@@ -1287,8 +1320,16 @@ len(learn.model)
 
 
 
-with Hooks(learn.model, append_hist_rebinned_stats) as hooks_naive: 
-    learn.fit(5, cbsched)
+if REFIT:
+    with Hooks(learn.model, append_hist_rebinned_stats) as hooks_naive: 
+        learn.fit(5, cbsched)
+    hooks_naive_grad_rebinned=learn.grad_rebinned
+    if SAVE_COMPRESSED_WTS:
+        np.save(f'{HOOK_PATH}/hooks_naive.npy', hooks_naive)
+        np.save(f'{HOOK_PATH}/hooks_naive_grad_rebinned', learn.grad_rebinned)
+else:
+    hooks_naive = np.load(f'{HOOK_PATH}/hooks_naive.npy')
+    hooks_naive_grad_rebinned = np.load(f'{HOOK_PATH}/hooks_naive_grad_rebinned.npy')
 
 
 # <pre>
@@ -1299,11 +1340,6 @@ with Hooks(learn.model, append_hist_rebinned_stats) as hooks_naive:
 # 3 	1.731837 	0.638368 	1.788130 	0.615491 	00:07
 # 4 	1.465440 	0.747413 	1.599652 	0.690180 	00:07
 # </pre>
-
-
-
-type(learn.grad_hists)
-
 
 # ##### Plots
 
@@ -1320,13 +1356,6 @@ type(hooks_naive)
 
 
 mod_summary=get_model_layer_list(learn.model)
-
-
-
-
-if SAVE_COMPRESSED_WTS:
-    np.save(f'{HOOK_PATH}/hooks_naive.npy', hooks_naive)
-    np.save(f'{HOOK_PATH}/hooks_naive_grad_rebinned', hooks_naive)
 
 
 
@@ -1356,62 +1385,7 @@ plot_bins(h, mod_summary, batch_max=False, scalar=0.8, cmap=plt.cm.nipy_spectral
 
 
 
-#eg learn.grad_rebinned
-def get_stacked_diff_deltas(grad_rebinned):
-    bdelts=[]
-    for l in grad_rebinned:
-        a = np.vstack(l)
-        a=np.diff(a)
-        bdelts.append(a)
-    return bdelts
-
-
-
-
-b=get_stacked_deltas(learn.grad_rebinned)
-
-
-
-
-#subtract the scalar we applied before tanking means
-e=b[0]-GRAD_SCALAR
-
-
-
-
-
-
-
-
-
-def plot_a_bin(hooks, model_summary, batch_max=True, scalar=0.5, cmap=plt.cm.nipy_spectral, fig_name=None):
-    #global min/max for model
-    d=hooks[0]
-    for h in d:
-        plt.plot(h)
-    plt.show()
-
-
-
-
-def plot_t_raster(data):
-    # use global min / max to ensure all weights are shown on the same scale
-    print(f'min: {np.amin(data)}, max: {np.amax(data)}')
-    vmin, vmax = data.min(), data.max()
-    try:
-        d=data.reshape((-1,REBIN_SHAPE[0],REBIN_SHAPE[0]))
-    except (RuntimeError,ValueError) as e:
-        redim=(int(data.size/REBIN_SHAPE[0]),REBIN_SHAPE[0],REBIN_SHAPE[0])
-        d = np.resize(data,redim)
-    for i in range(10):
-        plt.matshow(d[i], cmap=plt.cm.jet, vmin=.5 * vmin,
-                       vmax=.5 * vmax)
-    plt.show()
-
-
-
-
-len(learn.grad_rebinned)
+b=get_stacked_grads(hooks_naive_grad_rebinned, GRAD_SCALAR)
 
 
 
@@ -1421,14 +1395,32 @@ plt_ttle=['epoch '+str(i) for i in range(5)]
 
 
 
-plot_bins(bd, plt_ttle, batch_max=False, scalar=0.25, cmap=plt.cm.nipy_spectral, fig_name='hooks_naive_grads.png')
+plot_bins(b, plt_ttle, batch_max=False, scalar=0.25, cmap=plt.cm.nipy_spectral, fig_name='hooks_naive_grads.png')
 
 
-# #### Delta Grads
+# ### Batch plots
+# 
+# Each image below is a plot of one batch through full model.
+# 
+# Using jet colourmap (blue=low, red = high, light green in centre)
+
+# #### gradients for a batch
+# 
+# 
 
 
 
-d=np.diff(e)
+plot_t_raster(b[0], pltrange=(-0.06,0.06), cmap=plt.cm.jet)
+
+
+
+
+d=np.diff(b[0])
+
+
+# #### delta grads
+# 
+# difference between gradients inside a batch 
 
 
 
@@ -1436,19 +1428,59 @@ d=np.diff(e)
 plot_t_raster(d)
 
 
+# #### delta grads
+# 
+# difference between gradients between batches
+
+
+
+db=np.diff(b[0], axis=0)
+
+
+
+
+plot_t_raster(db, pltrange=(-0.06,0.06), cmap=plt.cm.jet)
+
+
+# #### batch weights
+
 
 
 plot_t_raster(h[0])
 
 
+# #### delta weights
+# 
+# difference between weights inside a batch 
 
 
-type(e)
+
+plot_t_raster(np.diff(h[0]))
+
+
+# #### delta weights
+# 
+# difference between weights between batches
+
+
+
+plot_t_raster(np.diff(h[0], axis=0))
 
 
 
 
-plot_bins(bdelts, mod_summary, batch_max=False, scalar=0.25, cmap=plt.cm.nipy_spectral, fig_name='hooks_naive_grad_delts.png')
+bdelts=get_stacked_diff_grads(hooks_naive_grad_rebinned)
+
+
+
+
+#number of epochs needs to be adjusted
+plt_ttle=['epoch '+str(i) for i in range(5)]
+
+
+
+
+plot_bins(bdelts, plt_ttle, batch_max=False, scalar=0.25, cmap=plt.cm.nipy_spectral, fig_name='hooks_naive_grad_delts.png')
 
 
 
@@ -1493,6 +1525,8 @@ hists[0].shape
 ms[0]
 
 
+# Intra batch weight changes - generated using difference of historgam for each batch (x)
+
 
 
 hooks_naive_diffs=delta_hists(hooks_naive)
@@ -1500,18 +1534,10 @@ hooks_naive_diffs=delta_hists(hooks_naive)
 
 
 
-len(hooks_naive_diffs)
-
-
-
-
-hooks_naive_diffs[0].shape
-
-
-
-
 plot_hooks_hist_diffs(hooks_naive_diffs, cmap=plt.cm.viridis, norm=True, fig_name='naive_hists_diffs.png',model=learn.model)
 
+
+# Between batch weight changes
 
 
 
@@ -1520,7 +1546,7 @@ hooks_bb_naive_diffs=delta_bb_hists(hooks_naive)
 
 
 
-plot_hooks_hist_diffs(hooks_bb_naive_diffs, cmap=plt.cm.viridis, norm=True, fig_name='naive_hists_diffs.png',model=learn.model)
+plot_hooks_hist_diffs(hooks_bb_naive_diffs, cmap=plt.cm.viridis, norm=True, fig_name='hooks_bb_naive_diffs.png',model=learn.model)
 
 
 
@@ -1538,6 +1564,8 @@ len(hooks_naive)
 naive_del_ms,naive_del_ss, del_hist=diff_stats(hooks_naive)
 
 
+# ##### Interbatch varation
+# 
 # Means changes
 
 
@@ -1548,6 +1576,19 @@ plot_deltas(naive_del_ms, 50, fig_name='naive_del_ms.png')
 
 
 plot_deltas(naive_del_ss, 50, fig_name='naive_del_sds.png')
+
+
+
+
+#plots above show difference between the single value of mean or variance for each batch, eg:
+i=0
+for h in hooks_naive:
+    ms,ss, hists = h.stats
+    print(len(ms))
+    print(ms[0:10])
+    if i>0:
+        break
+    i+=1
 
 
 
@@ -1569,17 +1610,8 @@ plot_deltas(naive_del_ss, 50, fig_name='naive_del_sds.png')
 
 
 
-learn.recorder.plot_loss()
-
-
-
-
-len(learn.recorder.losses)/len(learn.recorder.val_losses)
-
-
-
-
-#18.5 * more training data than validation data 
+if REFIT:
+    learn.recorder.plot_loss(save_path=IMG_PATH+'/'+NAME+'_naive_loss.png')
 
 
 # ## adapt_model and gradual unfreezing
@@ -1670,20 +1702,21 @@ for i in range(len(learn.model)-3):
 
 
 
-with Hooks(learn.model, append_hist_rebinned_stats) as hooks_freeze: 
-    learn.fit(3, sched_1cycle(1e-2, 0.5))
+if REFIT:
+    with Hooks(learn.model, append_hist_rebinned_stats) as hooks_freeze: 
+        learn.fit(3, sched_1cycle(1e-2, 0.5))
+    hooks_freeze_grad_rebinned=learn.grad_rebinned
+    if SAVE_COMPRESSED_WTS:
+        np.save(f'{HOOK_PATH}/hooks_freeze.npy', hooks_freeze)
+        np.save(f'{HOOK_PATH}/hooks_freeze_grad_rebinned', learn.grad_rebinned)
+else:
+    hooks_freeze = np.load(f'{HOOK_PATH}/hooks_freeze.npy')
+    hooks_freeze_grad_rebinned = np.load(f'{HOOK_PATH}/hooks_freeze_grad_rebinned.npy')
 
 
 
 
 plot_hooks(hooks_freeze,fig_name='freeze_layer_stats.png',model=learn.model)
-
-
-
-
-if SAVE_COMPRESSED_WTS:
-    np.save(f'{HOOK_PATH}/hooks_freeze.npy', hooks_freeze)
-    np.save(f'{HOOK_PATH}/hooks_freeze_grad_rebinned', learn.grad_rebinned)
 
 
 
@@ -1701,6 +1734,30 @@ plot_bins(h, mod_summary, batch_max=True, scalar=0.25, cmap=plt.cm.nipy_spectral
 plot_bins(h, mod_summary, batch_max=False, scalar=0.8, cmap=plt.cm.nipy_spectral, fig_name='hooks_freeze.png')
 
 
+# Intra batch weight changes - generated using difference of historgam for each batch (x)
+
+
+
+hooks_freeze_diffs=delta_hists(hooks_freeze)
+
+
+
+
+plot_hooks_hist_diffs(hooks_freeze_diffs, cmap=plt.cm.viridis, norm=True, fig_name='hooks_freeze_diffs.png',model=learn.model)
+
+
+# Between batch weight changes
+
+
+
+hooks_freeze_bb_diffs=delta_bb_hists(hooks_freeze)
+
+
+
+
+plot_hooks_hist_diffs(hooks_freeze_bb_diffs, cmap=plt.cm.viridis, norm=True, fig_name='hooks_freeze_bb_diffs.png',model=learn.model)
+
+
 
 
 plot_hooks_hist(hooks_freeze,fig_name='freeze_hists.png',model=learn.model)
@@ -1712,20 +1769,7 @@ plot_hooks_hist(hooks_freeze,fig_name='freeze_hists.png',model=learn.model)
 
 
 
-file_name = f'{HOOK_PATH}/hooks_freeze_grad_rebinned.npy'
-
-
-
-
-array_reloaded = np.load(file_name)
-
-
-
-
-b=[]
-for l in array_reloaded:
-    a = np.vstack(l)
-    b.append(a)
+b=get_stacked_grads(hooks_freeze_grad_rebinned)
 
 
 
@@ -1736,10 +1780,7 @@ e=b[0]-GRAD_SCALAR
 
 
 
-bd=[]
-for l in array_reloaded:
-    a = np.vstack(l)
-    bd.append(a-GRAD_SCALAR)
+bd=get_stacked_grads(hooks_freeze_grad_rebinned, GRAD_SCALAR)
 
 
 
@@ -1761,11 +1802,7 @@ plot_bins(bd, plt_ttle, batch_max=False, scalar=0.25, cmap=plt.cm.nipy_spectral,
 
 
 
-bdelts=[]
-for l in array_reloaded:
-    a = np.vstack(l)
-    a=np.diff(a)
-    bdelts.append(a)
+bdelts=get_stacked_diff_grads(hooks_freeze_grad_rebinned)
 
 
 
@@ -1817,7 +1854,8 @@ plot_deltas(frozen_del_ss, 50,fig_name='freeze_del_sds.png')
 
 
 
-learn.recorder.plot_loss()
+if REFIT:
+    learn.recorder.plot_loss(save_path=IMG_PATH+'/'+NAME+'_freeze_loss.png')
 
 
 # #### Unfreeze
@@ -1831,8 +1869,16 @@ for i in range(len(learn.model)-3):
 
 
 
-with Hooks(learn.model, append_hist_rebinned_stats) as hooks_unfreeze: 
-    learn.fit(5, cbsched, reset_opt=True)
+if REFIT:
+    with Hooks(learn.model, append_hist_rebinned_stats) as hooks_unfreeze: 
+        learn.fit(5, cbsched, reset_opt=True)
+    hooks_unfreeze_grad_rebinned=learn.grad_rebinned
+    if SAVE_COMPRESSED_WTS:
+        np.save(f'{HOOK_PATH}/hooks_unfreeze.npy', hooks_unfreeze)
+        np.save(f'{HOOK_PATH}/hooks_unfreeze_grad_rebinned', learn.grad_rebinned)
+else:
+    hooks_unfreeze = np.load(f'{HOOK_PATH}/hooks_unfreeze.npy')
+    hooks_unfreeze_grad_rebinned = np.load(f'{HOOK_PATH}/hooks_unfreeze_grad_rebinned.npy')
 
 
 # 
@@ -1843,13 +1889,6 @@ with Hooks(learn.model, append_hist_rebinned_stats) as hooks_unfreeze:
 
 
 plot_hooks(hooks_unfreeze,fig_name='unfreeze_layer_stats.png',model=learn.model)
-
-
-
-
-if SAVE_COMPRESSED_WTS:
-    np.save(f'{HOOK_PATH}/hooks_unfreeze.npy', hooks_unfreeze)
-    np.save(f'{HOOK_PATH}/hooks_unfreeze_grad_rebinned', learn.grad_rebinned)
 
 
 
@@ -1865,6 +1904,30 @@ plot_bins(h, mod_summary, batch_max=True, scalar=0.25, cmap=plt.cm.nipy_spectral
 
 
 plot_bins(h, mod_summary, batch_max=False, scalar=0.8, cmap=plt.cm.nipy_spectral, fig_name='hooks_unfreeze.png')
+
+
+# Intra batch weight changes - generated using difference of historgam for each batch (x)
+
+
+
+hooks_unfreeze_diffs=delta_hists(hooks_unfreeze)
+
+
+
+
+plot_hooks_hist_diffs(hooks_unfreeze_diffs, cmap=plt.cm.viridis, norm=True, fig_name='hooks_unfreeze_diffs.png',model=learn.model)
+
+
+# Between batch weight changes
+
+
+
+hooks_unfreeze_bb_diffs=delta_bb_hists(hooks_unfreeze)
+
+
+
+
+plot_hooks_hist_diffs(hooks_unfreeze_bb_diffs, cmap=plt.cm.viridis, norm=True, fig_name='hooks_unfreeze_bb_diffs.png',model=learn.model)
 
 
 
@@ -1899,7 +1962,8 @@ plot_deltas(unfrozen_del_ss, 50,fig_name='unfreeze_del_sds.png')
 
 
 
-learn.recorder.plot_loss()
+if REFIT:
+    learn.recorder.plot_loss(save_path=IMG_PATH+'/'+NAME+'_unfreeze_loss.png')
 
 
 # Freeze only layer params that aren't in the batch norm layers
@@ -1951,21 +2015,21 @@ apply_mod(learn.model, partial(set_grad, b=False))
 
 
 
-#run out of mem with deltas
-with Hooks(learn.model, append_hist_rebinned_stats) as hooks_freeze_non_bn: 
-    learn.fit(3, sched_1cycle(1e-2, 0.5))
+if REFIT:
+    with Hooks(learn.model, append_hist_rebinned_stats) as hooks_freeze_non_bn: 
+        learn.fit(3, sched_1cycle(1e-2, 0.5))
+    hooks_freeze_non_bn_grad_rebinned=learn.grad_rebinned
+    if SAVE_COMPRESSED_WTS:
+        np.save(f'{HOOK_PATH}/hooks_freeze_non_bn.npy', hooks_freeze_non_bn)
+        np.save(f'{HOOK_PATH}/hooks_freeze_non_bn_grad_rebinned', learn.grad_rebinned)
+else:
+    hooks_freeze_non_bn = np.load(f'{HOOK_PATH}/hooks_freeze_non_bn.npy')
+    hooks_freeze_non_bn_grad_rebinned = np.load(f'{HOOK_PATH}/hooks_freeze_non_bn_grad_rebinned.npy')
 
 
 
 
 plot_hooks(hooks_freeze_non_bn,fig_name='freeze_non_bn_layers.png',model=learn.model)
-
-
-
-
-if SAVE_COMPRESSED_WTS:
-    np.save(f'{HOOK_PATH}/hooks_freeze_non_bn.npy', hooks_freeze_non_bn)
-    np.save(f'{HOOK_PATH}/hooks_freeze_non_bn_grad_rebinned', learn.grad_rebinned)
 
 
 
@@ -1981,6 +2045,30 @@ plot_bins(h, mod_summary, batch_max=True, scalar=0.25, cmap=plt.cm.nipy_spectral
 
 
 plot_bins(h, mod_summary, batch_max=False, scalar=0.8, cmap=plt.cm.nipy_spectral, fig_name='hooks_freeze_non_bn.png')
+
+
+# Intra batch weight changes - generated using difference of historgam for each batch (x)
+
+
+
+hooks_freeze_non_bn_diffs=delta_hists(hooks_freeze_non_bn)
+
+
+
+
+plot_hooks_hist_diffs(hooks_freeze_non_bn_diffs, cmap=plt.cm.viridis, norm=True, fig_name='hooks_freeze_non_bn_diffs.png',model=learn.model)
+
+
+# Between batch weight changes
+
+
+
+hooks_freeze_non_bn_bb_diffs=delta_bb_hists(hooks_freeze_non_bn)
+
+
+
+
+plot_hooks_hist_diffs(hooks_freeze_non_bn_bb_diffs, cmap=plt.cm.viridis, norm=True, fig_name='hooks_freeze_non_bn_bb_diffs.png',model=learn.model)
 
 
 
@@ -2015,7 +2103,8 @@ plot_deltas(freeze_non_bn_del_sds, 50,fig_name='freeze_non_bn_del_sds.png')
 
 
 
-learn.recorder.plot_loss()
+if REFIT:
+    learn.recorder.plot_loss(save_path=IMG_PATH+'/'+NAME+'_bn_freeze_loss.png')
 
 
 # #### Unfreeze
@@ -2027,20 +2116,21 @@ apply_mod(learn.model, partial(set_grad, b=True))
 
 
 
-with Hooks(learn.model, append_hist_rebinned_stats) as hooks_unfreeze_non_bn: 
-    learn.fit(5, cbsched, reset_opt=True)
+if REFIT:
+    with Hooks(learn.model, append_hist_rebinned_stats) as hooks_unfreeze_non_bn: 
+        learn.fit(5, cbsched, reset_opt=True)
+    hooks_unfreeze_non_bn_grad_rebinned=learn.grad_rebinned
+    if SAVE_COMPRESSED_WTS:
+        np.save(f'{HOOK_PATH}/hooks_unfreeze_non_bn.npy', hooks_unfreeze_non_bn)
+        np.save(f'{HOOK_PATH}/hooks_unfreeze_non_bn_grad_rebinned', learn.grad_rebinned)
+else:
+    hooks_unfreeze_non_bn = np.load(f'{HOOK_PATH}/hooks_unfreeze_non_bn.npy')
+    hooks_unfreeze_non_bn_grad_rebinned = np.load(f'{HOOK_PATH}/hooks_unfreeze_non_bn_grad_rebinned.npy')
 
 
 
 
 plot_hooks(hooks_unfreeze_non_bn,fig_name='unfreeze_non_bn_layers.png',model=learn.model)
-
-
-
-
-if SAVE_COMPRESSED_WTS:
-    np.save(f'{HOOK_PATH}/hooks_unfreeze_non_bn.npy', hooks_unfreeze_non_bn)
-    np.save(f'{HOOK_PATH}/hooks_unfreeze_non_bn_grad_rebinned', learn.grad_rebinned)
 
 
 
@@ -2056,6 +2146,28 @@ plot_bins(h, mod_summary, batch_max=True, scalar=0.25, cmap=plt.cm.nipy_spectral
 
 
 plot_bins(h, mod_summary, batch_max=False, scalar=0.8, cmap=plt.cm.nipy_spectral, fig_name='hooks_unfreeze_non_bn.png')
+
+
+
+
+hooks_unfreeze_non_bn_diffs=delta_hists(hooks_unfreeze_non_bn)
+
+
+
+
+plot_hooks_hist_diffs(hooks_unfreeze_non_bn_diffs, cmap=plt.cm.viridis, norm=True, fig_name='hooks_unfreeze_non_bn_diffs.png',model=learn.model)
+
+
+# Between batch weight changes
+
+
+
+hooks_unfreeze_non_bn_bb_diffs=delta_bb_hists(hooks_unfreeze_non_bn)
+
+
+
+
+plot_hooks_hist_diffs(hooks_unfreeze_non_bn_bb_diffs, cmap=plt.cm.viridis, norm=True, fig_name='hooks_unfreeze_non_bn_bb_diffs.png',model=learn.model)
 
 
 
@@ -2090,7 +2202,8 @@ plot_deltas(unfreeze_non_bn_del_sds, 50,fig_name='unfreeze_non_bn_del_sds.png')
 
 
 
-learn.recorder.plot_loss()
+if REFIT:
+    learn.recorder.plot_loss(save_path=IMG_PATH+'/'+NAME+'_bn_unfreeze_loss.png')
 
 
 # Pytorch already has an `apply` method we can use:
@@ -2233,12 +2346,14 @@ def _print_det(o):
     print (len(o.opt.param_groups), o.opt.hypers)
     raise CancelTrainException()
 
-learn.fit(1, disc_lr_sched + [DebugCallback(cb_types.after_batch, _print_det)])
+if REFIT:
+    learn.fit(1, disc_lr_sched + [DebugCallback(cb_types.after_batch, _print_det)])
 
 
 
 
-learn.fit(3, disc_lr_sched)
+if REFIT:
+    learn.fit(3, disc_lr_sched)
 
 
 
@@ -2248,7 +2363,8 @@ disc_lr_sched = sched_1cycle([1e-3,1e-2], 0.3)
 
 
 
-learn.fit(1, disc_lr_sched)
+if REFIT:
+    learn.fit(1, disc_lr_sched)
 
 
 # ## Export
