@@ -41,27 +41,27 @@ data = DataBunch(*get_dls(train_ds, valid_ds, bs), c)
 class Callback():
     _order=0
     def set_runner(self, run): 
-        print('Callback.set_runner()')
         self.run=run
     def __getattr__(self, k): 
+        #line below is equivalent to self.run.k
         return getattr(self.run, k)
     
     @property
     def name(self):
+        #remove 'Callback' from name
         name = re.sub(r'Callback$', '', self.__class__.__name__)
         return camel2snake(name or 'callback')
     
     def __call__(self, cb_name):
+        #Return the value of the named attribute of object
         f = getattr(self, cb_name, None)
-        print(f'__call__() cbname: {cb_name}, type(f): {type(f)}')
         if f and f(): 
-            print(f'type(f): {type(f)}, type(f()): {type(f())}')
             return True
         return False
 
 class TrainEvalCallback(Callback):
     def begin_fit(self):
-        print('TrainEvalCallback.begin_fit()')
+        print('>>TrainEvalCallback.begin_fit()')
         self.run.n_epochs=0.
         self.run.n_iter=0
     
@@ -96,12 +96,9 @@ class CancelBatchException(Exception):
 
 class Runner():
     def __init__(self, cbs=None, cb_funcs=None):
-        print('>>Runner.__init__()')
         self.in_train = False
         cbs = listify(cbs)
-        print(f'cbs: {cbs}')
         for cbf in listify(cb_funcs):
-            print(f'cbf: {cbf}')
             cb = cbf()
             setattr(self, cb.name, cb)
             cbs.append(cb)
@@ -151,11 +148,8 @@ class Runner():
             self('after_cancel_epoch')
 
     def fit(self, epochs, learn):
-        print('>>Runner.fit()')
         self.epochs,self.learn,self.loss = epochs,learn,tensor(0.)
-
         try:
-            print(f'Runner.cbs: {self.cbs}')
             for cb in self.cbs: 
                 cb.set_runner(self)
             self('begin_fit')
@@ -163,7 +157,6 @@ class Runner():
                 self.epoch = epoch
                 if not self('begin_epoch'): 
                     self.all_batches(self.data.train_dl)
-
                 with torch.no_grad(): 
                     if not self('begin_validate'): 
                         self.all_batches(self.data.valid_dl)
@@ -178,10 +171,8 @@ class Runner():
             self.learn = None
 
     def __call__(self, cb_name):
-        print(f'>>__call__() cb_name: {cb_name}')
         res = False
         for cb in sorted(self.cbs, key=lambda x: x._order): 
-            print(f'__call__ cb: {cb} res: {res}')
             res = cb(cb_name) and res
         return res
 
